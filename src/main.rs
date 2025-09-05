@@ -7,10 +7,32 @@ mod strace;
 fn main() {
     let stdin = std::io::stdin().lock();
     for (n, line) in stdin.lines().enumerate() {
-        let n = n + 1;
         let line = line.unwrap();
-        println!("{n}: {line:?}");
-        let strace = strace::line_parser().parse(&line).into_result().unwrap();
+
+        let (strace, errors) = strace::line_parser().parse(&line).into_output_errors();
+        println!("{}: {line:?}", n + 1);
         println!("{strace:#?}");
+
+        let filename = "<stdin>";
+
+        for e in errors {
+            ariadne::Report::build(
+                ariadne::ReportKind::Error,
+                (filename, e.span().into_range()),
+            )
+            .with_config(ariadne::Config::new().with_index_type(ariadne::IndexType::Byte))
+            .with_message(e.to_string())
+            .with_label(
+                ariadne::Label::new((filename, e.span().into_range()))
+                    .with_message(e.reason().to_string())
+                    .with_color(ariadne::Color::Red),
+            )
+            .finish()
+            .print((
+                filename,
+                ariadne::Source::from(&line).with_display_line_offset(n),
+            ))
+            .unwrap()
+        }
     }
 }
