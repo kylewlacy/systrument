@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bstr = "1.12.0"
+chumsky = "1.0.0-alpha.8"
+jiff = "0.2.15"
+libc = "0.2.175"
