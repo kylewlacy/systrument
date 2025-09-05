@@ -32,21 +32,26 @@ enum Value {
     String(bstr::BString),
     TruncatedString(bstr::BString),
     Expression(String),
+    FunctionCall {
+        function: String,
+        args: Vec<Value>,
+    },
     Struct(Struct),
+    Array(Vec<Value>),
     Annotated {
         value: Box<Value>,
         annotation: bstr::BString,
     },
     Commented {
         value: Box<Value>,
-        comment: bstr::BString,
+        comment: String,
     },
     Truncated,
 }
 
 #[derive(Debug)]
 struct Struct {
-    entries: Vec<(bstr::BString, Value)>,
+    entries: Vec<(String, Value)>,
 }
 
 #[derive(Debug)]
@@ -107,12 +112,17 @@ pub fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line, ParserError<
         just('"').to(b'\"'),
         just('?').to(b'?'),
         just('x')
-            .ignore_then(text::int(16).repeated().exactly(2).to_slice())
+            .ignore_then(
+                one_of("0123456789ABCDEFabcdef")
+                    .repeated()
+                    .exactly(2)
+                    .to_slice(),
+            )
             .try_map(|hex: &str, span| {
                 let byte = u8::from_str_radix(hex, 16).map_err(|e| Rich::custom(span, e))?;
                 Ok(byte)
             }),
-        text::int(8)
+        one_of("01234567")
             .repeated()
             .at_least(1)
             .at_most(3)
@@ -140,10 +150,16 @@ pub fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line, ParserError<
         .delimited_by(just("<"), just(">"));
 
     let comment = just::<_, &str, ParserError>("/*")
-        .ignore_then(any().and_is(just("*/").not()).repeated())
+        .ignore_then(
+            any()
+                .and_is(just("*/").not())
+                .repeated()
+                .to_slice()
+                .padded(),
+        )
         .then_ignore(just("*/"));
 
-    let expression = one_of::<_, &str, ParserError>(
+    let basic_expression = one_of::<_, &str, ParserError>(
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._+-*/^&|",
     )
     .repeated()
@@ -162,8 +178,56 @@ pub fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line, ParserError<
                         Value::String(string)
                     }
                 }),
-            expression.map(Value::Expression),
+            text::ident()
+                .then(
+                    value
+                        .clone()
+                        .separated_by(just(",").padded())
+                        .collect::<Vec<_>>()
+                        .delimited_by(just("("), just(")")),
+                )
+                .map(|(function, args): (&str, _)| Value::FunctionCall {
+                    function: function.into(),
+                    args,
+                }),
+            value
+                .clone()
+                .separated_by(just(",").padded())
+                .collect::<Vec<_>>()
+                .delimited_by(just("["), just("]"))
+                .map(|values| Value::Array(values)),
+            text::ident()
+                .then_ignore(just("=").padded())
+                .then(value)
+                .map(|(name, value)| (String::from(name), value))
+                .separated_by(just(",").padded())
+                .collect::<Vec<_>>()
+                .delimited_by(just("{"), just("}"))
+                .map(|entries| Value::Struct(Struct { entries })),
+            basic_expression.map(Value::Expression),
         ))
+        .then(annotation.or_not())
+        .map(|(value, annotation)| {
+            if let Some(annotation) = annotation {
+                Value::Annotated {
+                    value: value.into(),
+                    annotation,
+                }
+            } else {
+                value
+            }
+        })
+        .then(comment.padded().or_not())
+        .map(|(value, comment)| {
+            if let Some(comment) = comment {
+                Value::Commented {
+                    value: value.into(),
+                    comment: comment.into(),
+                }
+            } else {
+                value
+            }
+        })
     });
 
     let syscall_duration = duration.delimited_by(just("<"), just(">"));
