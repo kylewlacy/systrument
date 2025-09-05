@@ -8,14 +8,14 @@ fn main() {
     let stdin = std::io::stdin().lock();
     for (n, line) in stdin.lines().enumerate() {
         let line = line.unwrap();
+        // println!("{}: {line:?}", n + 1);
 
         let (strace, errors) = strace::line_parser().parse(&line).into_output_errors();
-        println!("{}: {line:?}", n + 1);
-        println!("{strace:#?}");
+        // println!("{strace:#?}");
 
         let filename = "<stdin>";
 
-        for e in errors {
+        for e in &errors {
             ariadne::Report::build(
                 ariadne::ReportKind::Error,
                 (filename, e.span().into_range()),
@@ -33,6 +33,10 @@ fn main() {
                 ariadne::Source::from(&line).with_display_line_offset(n),
             ))
             .unwrap()
+        }
+
+        if !errors.is_empty() {
+            break;
         }
     }
 }
