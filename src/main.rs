@@ -6,6 +6,8 @@ mod event;
 mod perfetto;
 mod strace;
 
+pub type Pid = libc::pid_t;
+
 fn main() {
     let mut emitter = strace::emitter::EventEmitter::default();
     let output_path = std::env::args()

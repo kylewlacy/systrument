@@ -5,11 +5,14 @@ use std::{
 
 use bstr::ByteSlice;
 
-use crate::event::{Event, EventKind, StartProcessEvent, StopProcessEvent};
+use crate::{
+    Pid,
+    event::{Event, EventKind, StartProcessEvent, StopProcessEvent},
+};
 
 #[derive(Default)]
 pub struct EventEmitter {
-    alive_processes: HashMap<libc::pid_t, ProcessState>,
+    alive_processes: HashMap<Pid, ProcessState>,
     events: VecDeque<Event>,
 }
 
@@ -205,6 +208,6 @@ impl EventEmitter {
 
 #[derive(Default)]
 struct ProcessState {
-    parent_pid: Option<libc::pid_t>,
+    parent_pid: Option<Pid>,
     did_exec: bool,
 }

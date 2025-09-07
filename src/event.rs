@@ -1,9 +1,11 @@
 use bstr::ByteSlice as _;
 
+use crate::Pid;
+
 #[derive(Debug)]
 pub struct Event {
     pub timestamp: jiff::Timestamp,
-    pub pid: libc::pid_t,
+    pub pid: Pid,
     pub kind: EventKind,
 }
 

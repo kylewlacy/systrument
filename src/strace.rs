@@ -1,11 +1,13 @@
 use std::borrow::Cow;
 
+use crate::Pid;
+
 pub mod emitter;
 pub mod parser;
 
 #[derive(Debug)]
 pub struct Line {
-    pid: libc::pid_t,
+    pid: Pid,
     timestamp: jiff::Timestamp,
     event: Event,
 }

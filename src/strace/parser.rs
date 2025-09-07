@@ -1,14 +1,14 @@
 use chumsky::prelude::*;
 
+use crate::Pid;
+
 use super::{Event, Fields, Line, SyscallResult, Value};
 
 type ParserError<'a> = extra::Err<Rich<'a, char>>;
 
 pub fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line, ParserError<'a>> {
-    let pid = text::int(10).try_map(|pid: &str, span| {
-        pid.parse::<libc::pid_t>()
-            .map_err(|e| Rich::custom(span, e))
-    });
+    let pid = text::int(10)
+        .try_map(|pid: &str, span| pid.parse::<Pid>().map_err(|e| Rich::custom(span, e)));
 
     let signed_duration = one_of("+-")
         .or_not()

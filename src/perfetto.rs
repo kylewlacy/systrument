@@ -8,14 +8,14 @@ use perfetto_protos::{
 };
 use protobuf::{EnumOrUnknown, Message as _};
 
-use crate::event::Event;
+use crate::{Pid, event::Event};
 
 const TRACK_NAME: &str = "Processes";
 
 pub struct PerfettoOutput<W: std::io::Write> {
     writer: W,
     trusted_packet_sequence_id: trace_packet::Optional_trusted_packet_sequence_id,
-    track_uuids_by_pid: HashMap<libc::pid_t, u64>,
+    track_uuids_by_pid: HashMap<Pid, u64>,
 }
 
 impl<W: std::io::Write> PerfettoOutput<W> {
