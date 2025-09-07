@@ -9,7 +9,9 @@ fn main() {
     for (n, line) in stdin.lines().enumerate() {
         let line = line.unwrap();
 
-        let (_strace, errors) = strace::line_parser().parse(&line).into_output_errors();
+        let (_strace, errors) = strace::parser::line_parser()
+            .parse(&line)
+            .into_output_errors();
 
         let filename = "<stdin>";
 
