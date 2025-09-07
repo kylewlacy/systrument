@@ -86,7 +86,7 @@ pub fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line, ParserError<
         .to_slice()
         .then(
             just(".")
-                .then(one_of("0123456789").repeated().at_least(1))
+                .then(one_of('0'..='9').repeated().at_least(1))
                 .to_slice()
                 .or_not(),
         )
@@ -103,7 +103,7 @@ pub fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line, ParserError<
 
             Ok(jiff::SignedDuration::new(seconds, nanoseconds))
         });
-    let duration = signed_duration.try_map(|duration, span| {
+    let duration = signed_duration.clone().try_map(|duration, span| {
         std::time::Duration::try_from(duration).map_err(|e| Rich::custom(span, e))
     });
     let timestamp = signed_duration.try_map(|duration, span| {
@@ -125,7 +125,9 @@ pub fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line, ParserError<
         just('?').to(b'?'),
         just('x')
             .ignore_then(
-                one_of("0123456789ABCDEFabcdef")
+                one_of('0'..='9')
+                    .or(one_of('a'..='f'))
+                    .or(one_of('A'..='F'))
                     .repeated()
                     .exactly(2)
                     .to_slice(),
@@ -134,7 +136,7 @@ pub fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line, ParserError<
                 let byte = u8::from_str_radix(hex, 16).map_err(|e| Rich::custom(span, e))?;
                 Ok(byte)
             }),
-        one_of("01234567")
+        one_of('0'..='7')
             .repeated()
             .at_least(1)
             .at_most(3)
@@ -147,7 +149,7 @@ pub fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line, ParserError<
 
     let string = none_of("\\\"")
         .try_map(|c: char, span| u8::try_from(c).map_err(|e| Rich::custom(span, e)))
-        .or(string_escape)
+        .or(string_escape.clone())
         .repeated()
         .collect::<Vec<u8>>()
         .map(bstr::BString::new)
@@ -173,9 +175,9 @@ pub fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line, ParserError<
     .then(just("(deleted)").ignored().or_not())
     .map(|(annotation, deleted)| (annotation, deleted.is_some()));
     let label_annotation = choice((
-        one_of('a'..'z'),
-        one_of('A'..'Z'),
-        one_of('0'..'9'),
+        one_of('a'..='z'),
+        one_of('A'..='Z'),
+        one_of('0'..='9'),
         one_of("-_"),
     ))
     .repeated()
@@ -197,13 +199,14 @@ pub fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line, ParserError<
         )
         .then_ignore(just("*/"));
 
-    let basic_expression = one_of::<_, &str, ParserError>(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._+-*/^&|",
-    )
-    .repeated()
-    .at_least(1)
-    .to_slice()
-    .map(String::from);
+    let basic_expression = one_of('a'..='z')
+        .or(one_of('A'..='Z'))
+        .or(one_of('0'..='9'))
+        .or(one_of("_+-*/^&|"))
+        .repeated()
+        .at_least(1)
+        .to_slice()
+        .map(String::from);
 
     let value = recursive(|value| {
         choice((
@@ -339,7 +342,7 @@ pub fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line, ParserError<
         .padded()
         .then(
             any()
-                .and_is(syscall_duration.then(end()).not())
+                .and_is(syscall_duration.clone().then(end()).not())
                 .repeated()
                 .to_slice()
                 .map(String::from),
