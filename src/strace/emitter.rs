@@ -24,12 +24,12 @@ impl EventEmitter {
         let process_state = self.alive_processes.entry(pid).or_default();
 
         match line.event {
-            super::Event::Syscall {
+            super::Event::Syscall(super::SyscallEvent {
                 name,
                 args,
                 result,
                 duration: _,
-            } => match name.as_str() {
+            }) => match name.as_str() {
                 "fork" | "vfork" | "clone" | "clone3" => {
                     let child_pid = result.value.and_then(|value| value.as_i32());
                     if let Some(child_pid) = child_pid {

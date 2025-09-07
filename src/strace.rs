@@ -2,34 +2,30 @@ use std::borrow::Cow;
 
 use crate::Pid;
 
-pub mod emitter;
+// pub mod emitter;
 pub mod parser;
 
 #[derive(Debug)]
-pub struct Line {
+pub struct Line<'a> {
     pid: Pid,
     timestamp: jiff::Timestamp,
-    event: Event,
+    event: Event<'a>,
 }
 
 #[derive(Debug)]
-enum Event {
-    Syscall {
-        name: String,
-        args: Fields,
-        result: SyscallResult,
-        duration: std::time::Duration,
-    },
-    Signal {
-        signal: Value,
-        siginfo: Fields,
-    },
-    Exited {
-        code: Value,
-    },
-    KilledBy {
-        signal: Value,
-    },
+enum Event<'a> {
+    Syscall(SyscallEvent<'a>),
+    Signal { signal: &'a str },
+    Exited { code: &'a str },
+    KilledBy { signal: &'a str },
+}
+
+#[derive(Debug)]
+struct SyscallEvent<'a> {
+    name: &'a str,
+    args: &'a str,
+    result: &'a str,
+    duration: std::time::Duration,
 }
 
 #[derive(Debug)]
@@ -141,4 +137,10 @@ impl Fields {
 struct SyscallResult {
     value: Option<Value>,
     message: String,
+}
+
+#[derive(Debug)]
+pub struct LineSourceLocation<'a> {
+    pub filename: &'a str,
+    pub line_index: usize,
 }

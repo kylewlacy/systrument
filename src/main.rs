@@ -1,15 +1,13 @@
 use std::io::BufRead as _;
 
-use chumsky::Parser as _;
-
 mod event;
 mod perfetto;
 mod strace;
 
 pub type Pid = libc::pid_t;
 
-fn main() {
-    let mut emitter = strace::emitter::EventEmitter::default();
+fn main() -> miette::Result<()> {
+    // let mut emitter = strace::emitter::EventEmitter::default();
     let output_path = std::env::args()
         .skip(1)
         .next()
@@ -19,43 +17,35 @@ fn main() {
     let mut perfetto_writer =
         perfetto::PerfettoOutput::new(std::fs::File::create(output_path).unwrap());
 
-    for (n, line) in stdin.lines().enumerate() {
+    for (line_index, line) in stdin.lines().enumerate() {
         let line = line.unwrap();
 
-        let (strace, errors) = strace::parser::line_parser()
-            .parse(&line)
-            .into_output_errors();
+        let strace = strace::parser::parse_line(
+            &line,
+            &strace::LineSourceLocation {
+                filename: "<stdin>",
+                line_index,
+            },
+        );
+        let strace = match strace {
+            Ok(strace) => strace,
+            Err(error) => {
+                let report = miette::Report::new(error);
+                println!("{report:?}");
+                continue;
+            }
+        };
 
-        let filename = "<stdin>";
+        // println!("{strace:#?}");
 
-        for e in &errors {
-            ariadne::Report::build(
-                ariadne::ReportKind::Error,
-                (filename, e.span().into_range()),
-            )
-            .with_config(ariadne::Config::new().with_index_type(ariadne::IndexType::Byte))
-            .with_message(e.to_string())
-            .with_label(
-                ariadne::Label::new((filename, e.span().into_range()))
-                    .with_message(e.reason().to_string())
-                    .with_color(ariadne::Color::Red),
-            )
-            .finish()
-            .eprint((
-                filename,
-                ariadne::Source::from(&line).with_display_line_offset(n),
-            ))
-            .unwrap()
-        }
+        // emitter.push_line(strace);
 
-        if let Some(strace) = strace {
-            emitter.push_line(strace);
-        }
-
-        while let Some(event) = emitter.pop_event() {
-            perfetto_writer
-                .output_event(event)
-                .expect("error writing perfetto event");
-        }
+        // while let Some(event) = emitter.pop_event() {
+        //     perfetto_writer
+        //         .output_event(event)
+        //         .expect("error writing perfetto event");
+        // }
     }
+
+    Ok(())
 }
