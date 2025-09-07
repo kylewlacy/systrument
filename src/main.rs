@@ -3,12 +3,20 @@ use std::io::BufRead as _;
 use chumsky::Parser as _;
 
 mod event;
+mod perfetto;
 mod strace;
 
 fn main() {
     let mut emitter = strace::emitter::EventEmitter::default();
+    let output_path = std::env::args()
+        .skip(1)
+        .next()
+        .expect("usage: <output-path>");
 
     let stdin = std::io::stdin().lock();
+    let mut perfetto_writer =
+        perfetto::PerfettoOutput::new(std::fs::File::create(output_path).unwrap());
+
     for (n, line) in stdin.lines().enumerate() {
         let line = line.unwrap();
 
@@ -31,7 +39,7 @@ fn main() {
                     .with_color(ariadne::Color::Red),
             )
             .finish()
-            .print((
+            .eprint((
                 filename,
                 ariadne::Source::from(&line).with_display_line_offset(n),
             ))
@@ -43,18 +51,9 @@ fn main() {
         }
 
         while let Some(event) = emitter.pop_event() {
-            let pid = event.pid;
-            match event.kind {
-                event::EventKind::StartProcess(event) => {
-                    println!(
-                        "[{pid}] start: {}",
-                        event.command_name().unwrap_or_default()
-                    );
-                }
-                event::EventKind::StopProcess(event) => {
-                    println!("[{pid}] stop: {event:?}");
-                }
-            }
+            perfetto_writer
+                .output_event(event)
+                .expect("error writing perfetto event");
         }
     }
 }
