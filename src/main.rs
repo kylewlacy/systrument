@@ -8,10 +8,8 @@ fn main() {
     let stdin = std::io::stdin().lock();
     for (n, line) in stdin.lines().enumerate() {
         let line = line.unwrap();
-        // println!("{}: {line:?}", n + 1);
 
-        let (strace, errors) = strace::line_parser().parse(&line).into_output_errors();
-        // println!("{strace:#?}");
+        let (_strace, errors) = strace::line_parser().parse(&line).into_output_errors();
 
         let filename = "<stdin>";
 
@@ -33,10 +31,6 @@ fn main() {
                 ariadne::Source::from(&line).with_display_line_offset(n),
             ))
             .unwrap()
-        }
-
-        if !errors.is_empty() {
-            break;
         }
     }
 }
