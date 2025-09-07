@@ -7,7 +7,7 @@ pub struct Event {
 
 #[derive(Debug)]
 pub enum EventKind {
-    StartProcess,
+    StartProcess(StartProcessEvent),
     StopProcess(StopProcessEvent),
     ExecProcess(ProcessExec),
 }
@@ -17,6 +17,11 @@ pub struct ProcessExec {
     pub command: Option<bstr::BString>,
     pub args: Option<Vec<bstr::BString>>,
     pub env: Option<Vec<(bstr::BString, bstr::BString)>>,
+}
+
+#[derive(Debug, Default)]
+pub struct StartProcessEvent {
+    pub parent_pid: Option<i32>,
 }
 
 #[derive(Debug)]
