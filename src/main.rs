@@ -43,7 +43,18 @@ fn main() {
         }
 
         while let Some(event) = emitter.pop_event() {
-            println!("{event:#?}");
+            let pid = event.pid;
+            match event.kind {
+                event::EventKind::StartProcess(event) => {
+                    println!(
+                        "[{pid}] start: {}",
+                        event.command_name().unwrap_or_default()
+                    );
+                }
+                event::EventKind::StopProcess(event) => {
+                    println!("[{pid}] stop: {event:?}");
+                }
+            }
         }
     }
 }

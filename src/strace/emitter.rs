@@ -5,7 +5,7 @@ use std::{
 
 use bstr::ByteSlice;
 
-use crate::event::{Event, EventKind, ProcessExec, StartProcessEvent, StopProcessEvent};
+use crate::event::{Event, EventKind, StartProcessEvent, StopProcessEvent};
 
 #[derive(Default)]
 pub struct EventEmitter {
@@ -18,15 +18,7 @@ impl EventEmitter {
         let timestamp = line.timestamp;
         let pid = line.pid;
 
-        self.alive_processes.entry(pid).or_insert_with(|| {
-            self.events.push_back(Event {
-                timestamp,
-                pid,
-                kind: EventKind::StartProcess(StartProcessEvent::default()),
-            });
-
-            ProcessState::default()
-        });
+        let process_state = self.alive_processes.entry(pid).or_default();
 
         match line.event {
             super::Event::Syscall {
@@ -38,19 +30,12 @@ impl EventEmitter {
                 "fork" | "vfork" | "clone" | "clone3" => {
                     let child_pid = result.value.and_then(|value| value.as_i32());
                     if let Some(child_pid) = child_pid {
-                        self.alive_processes.entry(child_pid).or_insert_with(|| {
-                            self.events.push_back(Event {
-                                timestamp,
-                                pid: child_pid,
-                                kind: EventKind::StartProcess(StartProcessEvent {
-                                    parent_pid: Some(pid),
-                                }),
-                            });
-
-                            ProcessState {
+                        self.alive_processes
+                            .entry(child_pid)
+                            .or_insert_with(|| ProcessState {
                                 parent_pid: Some(pid),
-                            }
-                        });
+                                ..Default::default()
+                            });
                     }
                 }
                 "execve" => {
@@ -85,10 +70,20 @@ impl EventEmitter {
                                 .collect()
                         });
 
+                    if process_state.did_exec {
+                        self.events.push_back(Event {
+                            timestamp,
+                            pid,
+                            kind: EventKind::StopProcess(StopProcessEvent::ReExeced),
+                        });
+                    }
+                    process_state.did_exec = true;
+
                     self.events.push_back(Event {
                         timestamp,
                         pid,
-                        kind: EventKind::ExecProcess(ProcessExec {
+                        kind: EventKind::StartProcess(StartProcessEvent {
+                            parent_pid: process_state.parent_pid,
                             command,
                             args: exec_args,
                             env,
@@ -143,10 +138,20 @@ impl EventEmitter {
                                 .collect()
                         });
 
+                    if process_state.did_exec {
+                        self.events.push_back(Event {
+                            timestamp,
+                            pid,
+                            kind: EventKind::StopProcess(StopProcessEvent::ReExeced),
+                        });
+                    }
+                    process_state.did_exec = true;
+
                     self.events.push_back(Event {
                         timestamp,
                         pid,
-                        kind: EventKind::ExecProcess(ProcessExec {
+                        kind: EventKind::StartProcess(StartProcessEvent {
+                            parent_pid: process_state.parent_pid,
                             command,
                             args: exec_args,
                             env,
@@ -157,8 +162,11 @@ impl EventEmitter {
             },
             super::Event::Signal { .. } => {}
             super::Event::Exited { code } => {
-                let did_remove = self.alive_processes.remove(&pid).is_some();
-                if did_remove {
+                let did_stop_process = self
+                    .alive_processes
+                    .remove(&pid)
+                    .is_some_and(|state| state.did_exec);
+                if did_stop_process {
                     self.events.push_back(Event {
                         timestamp,
                         pid,
@@ -169,8 +177,11 @@ impl EventEmitter {
                 }
             }
             super::Event::KilledBy { signal } => {
-                let did_remove = self.alive_processes.remove(&pid).is_some();
-                if did_remove {
+                let did_stop_process = self
+                    .alive_processes
+                    .remove(&pid)
+                    .is_some_and(|state| state.did_exec);
+                if did_stop_process {
                     let signal = if let super::Value::Expression(signal) = signal {
                         Some(signal)
                     } else {
@@ -195,4 +206,5 @@ impl EventEmitter {
 #[derive(Default)]
 struct ProcessState {
     parent_pid: Option<libc::pid_t>,
+    did_exec: bool,
 }
