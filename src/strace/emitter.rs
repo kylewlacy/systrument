@@ -76,6 +76,64 @@ impl EventEmitter {
                         }),
                     });
                 }
+                "execveat" => {
+                    let dir = args
+                        .value_at_index(0)
+                        .and_then(super::Value::to_bstring)
+                        .map(Cow::into_owned);
+                    let command = args
+                        .value_at_index(1)
+                        .and_then(super::Value::to_bstring)
+                        .map(Cow::into_owned);
+                    let command = match (dir, command) {
+                        (Some(mut dir), Some(command)) => {
+                            if !command.is_empty() {
+                                dir.push(b'/');
+                                dir.extend_from_slice(&command);
+                            }
+                            Some(dir)
+                        }
+                        (Some(path), None) | (None, Some(path)) => Some(path),
+                        (None, None) => None,
+                    };
+
+                    let exec_args =
+                        args.value_at_index(2)
+                            .and_then(super::Value::as_array)
+                            .map(|args| {
+                                args.iter()
+                                    .map(|arg| {
+                                        arg.to_bstring()
+                                            .unwrap_or(Cow::Borrowed(bstr::BStr::new(
+                                                b"<unknown arg>",
+                                            )))
+                                            .into_owned()
+                                    })
+                                    .collect()
+                            });
+                    let env = args
+                        .value_at_index(3)
+                        .and_then(super::Value::as_array)
+                        .map(|env| {
+                            env.iter()
+                                .filter_map(|env| {
+                                    let env = env.to_bstring()?;
+                                    let (key, value) = env.split_once_str(b"=")?;
+                                    Some((bstr::BString::from(key), bstr::BString::from(value)))
+                                })
+                                .collect()
+                        });
+
+                    self.events.push_back(Event {
+                        timestamp,
+                        pid,
+                        kind: EventKind::ExecProcess(ProcessExec {
+                            command,
+                            args: exec_args,
+                            env,
+                        }),
+                    });
+                }
                 _ => {}
             },
             super::Event::Signal { .. } => {}

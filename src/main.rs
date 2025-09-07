@@ -6,11 +6,13 @@ mod event;
 mod strace;
 
 fn main() {
+    let mut emitter = strace::emitter::EventEmitter::default();
+
     let stdin = std::io::stdin().lock();
     for (n, line) in stdin.lines().enumerate() {
         let line = line.unwrap();
 
-        let (_strace, errors) = strace::parser::line_parser()
+        let (strace, errors) = strace::parser::line_parser()
             .parse(&line)
             .into_output_errors();
 
@@ -34,6 +36,14 @@ fn main() {
                 ariadne::Source::from(&line).with_display_line_offset(n),
             ))
             .unwrap()
+        }
+
+        if let Some(strace) = strace {
+            emitter.push_line(strace);
+        }
+
+        while let Some(event) = emitter.pop_event() {
+            println!("{event:#?}");
         }
     }
 }
