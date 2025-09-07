@@ -2,6 +2,7 @@ use std::io::BufRead as _;
 
 use chumsky::Parser as _;
 
+mod event;
 mod strace;
 
 fn main() {
