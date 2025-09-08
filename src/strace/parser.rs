@@ -1,17 +1,172 @@
+use blame_on::Blame;
 use chumsky::prelude::*;
 
 use crate::{Pid, strace::SyscallEvent};
 
-use super::{Event, Fields, Line, SyscallResult, Value};
+use super::{Event, Line};
 
 pub fn parse_line<'line, 'loc>(
     line: &'line str,
     location: &super::LineSourceLocation,
 ) -> Result<Line<'line>, ParseLineError> {
-    line_parser()
-        .parse(line)
-        .into_result()
-        .map_err(|errors| ParseLineError::from_parser_errors(line, location, errors))
+    let input = Blame::new_str(line);
+
+    let (pid, input) = input.split_once(" ").map_err(|blame| {
+        ParseLineError::new(
+            line,
+            location,
+            miette::LabeledSpan::at(blame.span, "expected pid"),
+        )
+    })?;
+    let pid = pid.parse::<Pid>().map_err(|blame| {
+        ParseLineError::new(
+            line,
+            location,
+            miette::LabeledSpan::at(blame.span, "invalid pid"),
+        )
+    })?;
+
+    let (timestamp, input) = input.split_once(" ").map_err(|blame| {
+        ParseLineError::new(
+            line,
+            location,
+            miette::LabeledSpan::at(blame.span, "expected timestamp"),
+        )
+    })?;
+    let timestamp = timestamp
+        .try_map(|timestamp| {
+            let duration = parse_duration(timestamp)?;
+            let timestamp = jiff::Timestamp::from_duration(duration).map_err(|_| ())?;
+            Result::<_, ()>::Ok(timestamp)
+        })
+        .map_err(|blame| {
+            ParseLineError::new(
+                line,
+                location,
+                miette::LabeledSpan::at(blame.span, "invalid timestamp"),
+            )
+        })?;
+
+    let event = if let Ok(input) = input.strip_prefix("+++ ") {
+        let (event, input) = input.rsplit_once(" +++").map_err(|blame| {
+            ParseLineError::new(
+                line,
+                location,
+                miette::LabeledSpan::at(blame.span, "failed to parse exit event"),
+            )
+        })?;
+        input.empty().map_err(|blame| {
+            ParseLineError::new(
+                line,
+                location,
+                miette::LabeledSpan::at(blame.span, "expected end of input"),
+            )
+        })?;
+
+        if let Ok(code) = event.strip_prefix("exited with ") {
+            Event::Exited { code: code.value }
+        } else if let Ok(signal) = event.strip_prefix("killed by ") {
+            Event::KilledBy {
+                signal: signal.value,
+            }
+        } else {
+            return Err(ParseLineError::new(
+                line,
+                location,
+                miette::LabeledSpan::at(event.span, "could not parse exit event"),
+            ));
+        }
+    } else if let Ok(input) = input.strip_prefix("--- ") {
+        let signal = input.strip_suffix(" ---").map_err(|blame| {
+            ParseLineError::new(
+                line,
+                location,
+                miette::LabeledSpan::at(blame.span, "failed to parse signal event"),
+            )
+        })?;
+        Event::Signal {
+            signal: signal.value,
+        }
+    } else {
+        let (syscall_name, input) = input.split_once("(").map_err(|blame| {
+            ParseLineError::new(
+                line,
+                location,
+                miette::LabeledSpan::at(blame.span, "failed to parse event"),
+            )
+        })?;
+
+        let (input, duration) = input
+            .strip_suffix(">")
+            .and_then(|input| input.rsplit_once(" <"))
+            .map_err(|blame| {
+                ParseLineError::new(
+                    line,
+                    location,
+                    miette::LabeledSpan::at(blame.span, "expected duration at end of syscall"),
+                )
+            })?;
+        let duration = duration
+            .try_map(|duration| {
+                let duration = parse_duration(duration)?;
+                let duration = std::time::Duration::try_from(duration).map_err(|_| ())?;
+                Result::<_, ()>::Ok(duration)
+            })
+            .map_err(|blame| {
+                ParseLineError::new(
+                    line,
+                    location,
+                    miette::LabeledSpan::at(blame.span, "invalid duration"),
+                )
+            })?;
+        let (input, result) = input.rsplit_once(" = ").map_err(|blame| {
+            ParseLineError::new(
+                line,
+                location,
+                miette::LabeledSpan::at(blame.span, "failed to parse syscall result"),
+            )
+        })?;
+        let args = input.strip_suffix(")").map_err(|blame| {
+            ParseLineError::new(
+                line,
+                location,
+                miette::LabeledSpan::at(blame.span, "failed to parse syscall args"),
+            )
+        })?;
+
+        Event::Syscall(SyscallEvent {
+            name: syscall_name.value,
+            args: args.value,
+            result: result.value.trim(),
+            duration: duration.value,
+        })
+    };
+
+    Ok(Line {
+        pid: pid.value,
+        timestamp: timestamp.value,
+        event,
+    })
+}
+
+fn parse_duration(s: &str) -> Result<jiff::SignedDuration, ()> {
+    let (seconds, subsecond) = if let Some(decimal_index) = s.find('.') {
+        let (seconds, subsecond) = s.split_at(decimal_index);
+        (seconds, Some(subsecond))
+    } else {
+        (s, None)
+    };
+
+    let seconds: i64 = seconds.parse().map_err(|_| ())?;
+    let nanoseconds = if let Some(subsecond) = subsecond {
+        let subsecond: f64 = subsecond.parse().map_err(|_| ())?;
+        let nanoseconds = (subsecond * 1_000_000_000.0).round() as i32;
+        nanoseconds.clamp(0, 999_999_999)
+    } else {
+        0
+    };
+
+    Ok(jiff::SignedDuration::new(seconds, nanoseconds))
 }
 
 fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line<'a>, ParserError<'a>> {
@@ -123,6 +278,17 @@ pub struct ParseLineError {
 }
 
 impl ParseLineError {
+    fn new(source: &str, location: &super::LineSourceLocation, span: miette::LabeledSpan) -> Self {
+        Self {
+            src: StraceSource {
+                source: source.to_string(),
+                filename: location.filename.to_string(),
+                line_index: location.line_index,
+            },
+            spans: vec![span],
+        }
+    }
+
     fn from_parser_errors(
         source: &str,
         location: &super::LineSourceLocation,

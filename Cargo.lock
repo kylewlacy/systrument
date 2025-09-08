@@ -86,6 +86,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2261d10cca569e4643e526d8dc2e62e433cc8aba21ab764233731f8d369bf394"
 
 [[package]]
+name = "blame-on"
+version = "0.1.0"
+source = "git+https://github.com/kylewlacy/blame-on.git#767c4e6178b5354538405002f2a1241c76b850a8"
+dependencies = [
+ "bstr",
+ "miette",
+]
+
+[[package]]
 name = "bstr"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -754,6 +763,7 @@ name = "systrument"
 version = "0.1.0"
 dependencies = [
  "ariadne",
+ "blame-on",
  "bstr",
  "chumsky",
  "jiff",

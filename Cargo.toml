@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 ariadne = { version = "0.5.1", features = ["auto-color"] }
+blame-on = { git = "https://github.com/kylewlacy/blame-on.git", features = ["miette"] }
 bstr = "1.12.0"
 chumsky = "1.0.0-alpha.8"
 jiff = "0.2.15"
