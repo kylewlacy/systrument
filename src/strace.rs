@@ -7,13 +7,13 @@ pub mod parser;
 
 #[derive(Debug)]
 pub struct Line<'a> {
-    pid: Pid,
-    timestamp: jiff::Timestamp,
-    event: Event<'a>,
+    pub pid: Pid,
+    pub timestamp: jiff::Timestamp,
+    pub event: Event<'a>,
 }
 
 #[derive(Debug)]
-enum Event<'a> {
+pub enum Event<'a> {
     Syscall(SyscallEvent<'a>),
     Signal { signal: &'a str },
     Exited { code: &'a str },
@@ -21,11 +21,11 @@ enum Event<'a> {
 }
 
 #[derive(Debug)]
-struct SyscallEvent<'a> {
-    name: &'a str,
-    args: &'a str,
-    result: &'a str,
-    duration: std::time::Duration,
+pub struct SyscallEvent<'a> {
+    pub name: &'a str,
+    pub args: &'a str,
+    pub result: &'a str,
+    pub duration: std::time::Duration,
 }
 
 #[derive(Debug)]
