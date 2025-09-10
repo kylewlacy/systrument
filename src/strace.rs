@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use blame_on::Blame;
+
 use crate::Pid;
 
 // pub mod emitter;
@@ -23,50 +25,50 @@ pub enum Event<'a> {
 #[derive(Debug)]
 pub struct SyscallEvent<'a> {
     pub name: &'a str,
-    pub args: &'a str,
+    pub args: Blame<&'a str>,
     pub result: &'a str,
     pub duration: std::time::Duration,
 }
 
-#[derive(Debug)]
-enum Value {
-    String(bstr::BString),
-    TruncatedString(bstr::BString),
-    Expression(String),
+#[derive(Debug, PartialEq, Eq)]
+enum Value<'a> {
+    String(Cow<'a, bstr::BStr>),
+    TruncatedString(Cow<'a, bstr::BStr>),
+    Expression(&'a str),
     FunctionCall {
-        function: String,
-        args: Vec<Value>,
+        function: &'a str,
+        args: Vec<Value<'a>>,
     },
-    Struct(Fields),
-    SparseArray(Vec<(Value, Value)>),
-    Array(Vec<Value>),
-    NotBitSet(Vec<Value>),
+    Struct(Vec<Field<'a>>),
+    SparseArray(Vec<(Value<'a>, Value<'a>)>),
+    Array(Vec<Value<'a>>),
+    NotBitSet(Vec<Value<'a>>),
     Annotated {
-        value: Box<Value>,
-        annotation: bstr::BString,
+        value: Box<Value<'a>>,
+        annotation: Cow<'a, bstr::BStr>,
         deleted: bool,
     },
     Commented {
-        value: Box<Value>,
+        value: Box<Value<'a>>,
         comment: String,
     },
     Changed {
-        from: Box<Value>,
-        to: Box<Value>,
+        from: Box<Value<'a>>,
+        to: Box<Value<'a>>,
     },
     Alternative {
-        left: Box<Value>,
-        right: Box<Value>,
+        left: Box<Value<'a>>,
+        right: Box<Value<'a>>,
     },
     Truncated,
 }
 
-impl Value {
+impl Value<'_> {
     fn to_bstring(&self) -> Option<Cow<'_, bstr::BStr>> {
         match self {
-            Self::String(bstring) => Some(Cow::Borrowed(bstr::BStr::new(bstring))),
+            Self::String(bstr) => Some(Cow::Borrowed(&**bstr)),
             Self::TruncatedString(bstring) => {
-                let mut bstring = bstring.clone();
+                let mut bstring = bstring.clone().into_owned();
                 bstring.extend_from_slice(b"...");
                 Some(Cow::Owned(bstring))
             }
@@ -83,7 +85,7 @@ impl Value {
             } => {
                 let bstring = value
                     .to_bstring()
-                    .unwrap_or(Cow::Borrowed(bstr::BStr::new(annotation)));
+                    .unwrap_or(Cow::Borrowed(bstr::BStr::new(&**annotation)));
                 Some(bstring)
             }
             Self::Commented { value, comment: _ } => value.to_bstring(),
@@ -93,7 +95,7 @@ impl Value {
         }
     }
 
-    fn as_array(&self) -> Option<&[Value]> {
+    fn as_array(&'_ self) -> Option<&'_ [Value<'_>]> {
         if let Self::Array(values) = self {
             Some(values)
         } else {
@@ -111,32 +113,18 @@ impl Value {
 }
 
 #[derive(Debug)]
-struct Fields {
-    entries: Vec<(Option<String>, Value)>,
-    truncated: bool,
+struct LazyFields<'a> {
+    string: Blame<&'a str>,
 }
 
-impl Fields {
-    fn value_at_index(&self, index: usize) -> Option<&Value> {
-        if let Some((_, value)) = self.entries.get(index) {
-            return Some(value);
-        }
-
-        if self.truncated {
-            None
-        } else {
-            panic!(
-                "field index {index} is out of bounds (number of fields: {})",
-                self.entries.len()
-            );
-        }
-    }
+struct Fields<'a> {
+    values: Vec<Field<'a>>,
 }
 
-#[derive(Debug)]
-struct SyscallResult {
-    value: Option<Value>,
-    message: String,
+#[derive(Debug, PartialEq, Eq)]
+struct Field<'a> {
+    pub name: Option<&'a str>,
+    pub value: Value<'a>,
 }
 
 #[derive(Debug)]

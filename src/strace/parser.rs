@@ -1,9 +1,12 @@
+use std::borrow::Cow;
+
 use blame_on::Blame;
+use bstr::ByteVec as _;
 use chumsky::prelude::*;
 
-use crate::{Pid, strace::SyscallEvent};
+use crate::Pid;
 
-use super::{Event, Line};
+use super::{Event, Field, Fields, Line, SyscallEvent, Value};
 
 pub fn parse_line<'line, 'loc>(
     line: &'line str,
@@ -136,7 +139,7 @@ pub fn parse_line<'line, 'loc>(
 
         Event::Syscall(SyscallEvent {
             name: syscall_name.value,
-            args: args.value,
+            args,
             result: result.value.trim(),
             duration: duration.value,
         })
@@ -169,106 +172,399 @@ fn parse_duration(s: &str) -> Result<jiff::SignedDuration, ()> {
     Ok(jiff::SignedDuration::new(seconds, nanoseconds))
 }
 
-fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line<'a>, ParserError<'a>> {
-    let pid = text::int(10)
-        .try_map(|pid: &str, span| pid.parse::<Pid>().map_err(|e| Rich::custom(span, e)));
+fn parse_value<'a, 'src>(
+    input: Blame<&'a str>,
+    source: &str,
+    location: &super::LineSourceLocation,
+) -> Result<(Value<'a>, Blame<&'a str>), ParseLineError> {
+    if let Ok(string) = input.strip_prefix("\"") {
+        let literal_string_end = string
+            .map(|string| string.find(&['"', '\\']))
+            .into_result()
+            .map_err(|blame| {
+                ParseLineError::new(
+                    source,
+                    location,
+                    miette::LabeledSpan::at(blame.span, "invalid string value"),
+                )
+            })?;
+        let (literal_string, mut rest) = string.split_at(literal_string_end.value);
+        let mut string = Cow::Borrowed(bstr::BStr::new(literal_string.value.as_bytes()));
 
-    let signed_duration = one_of("+-")
-        .or_not()
-        .then(text::int(10))
-        .to_slice()
-        .then(
-            just(".")
-                .then(one_of('0'..='9').repeated().at_least(1))
-                .to_slice()
-                .or_not(),
-        )
-        .try_map(|(seconds, fraction): (&str, Option<&str>), span| {
-            let seconds = seconds.parse::<i64>().map_err(|e| Rich::custom(span, e))?;
-
-            let nanoseconds = if let Some(fraction) = fraction {
-                let fraction = fraction.parse::<f64>().map_err(|e| Rich::custom(span, e))?;
-                let nanoseconds = (fraction * 1_000_000_000.0).round() as i32;
-                nanoseconds.clamp(0, 999_999_999)
-            } else {
-                0
+        while let Ok(escape) = rest.strip_prefix("\\") {
+            let escape_byte = escape.as_bytes().value.get(0).copied().ok_or_else(|| {
+                ParseLineError::new(
+                    source,
+                    location,
+                    miette::LabeledSpan::at(escape.span, "unexpected end of string"),
+                )
+            })?;
+            let (append, consumed) = match escape_byte {
+                b'\\' => (b'\\', 1),
+                b'a' => (0x07, 1),
+                b'b' => (0x08, 1),
+                b'e' => (0x1B, 1),
+                b'f' => (0x0C, 1),
+                b'n' => (b'\n', 1),
+                b'r' => (b'\r', 1),
+                b't' => (b'\t', 1),
+                b'v' => (0x0B, 1),
+                b'\'' => (b'\'', 1),
+                b'"' => (b'"', 1),
+                b'?' => (b'?', 1),
+                b'x' => {
+                    let hex = escape.value.get(1..3).ok_or_else(|| {
+                        ParseLineError::new(
+                            source,
+                            location,
+                            miette::LabeledSpan::at(escape.span, "unexpected end of string"),
+                        )
+                    })?;
+                    let byte = u8::from_str_radix(hex, 16).map_err(|e| {
+                        ParseLineError::new(
+                            source,
+                            location,
+                            miette::LabeledSpan::at(escape.span, "invalid hex escape in string"),
+                        )
+                    })?;
+                    (byte, 3)
+                }
+                b'0'..b'7' => {
+                    let escaped_bytes = &escape.value.as_bytes()[0..];
+                    let num_octal_bytes = escaped_bytes
+                        .iter()
+                        .take(3)
+                        .take_while(|b| (b'0'..=b'7').contains(b))
+                        .count();
+                    let octal_bytes = &escaped_bytes[0..num_octal_bytes];
+                    let octal = std::str::from_utf8(octal_bytes).unwrap();
+                    let byte = u8::from_str_radix(octal, 8).map_err(|e| {
+                        ParseLineError::new(
+                            source,
+                            location,
+                            miette::LabeledSpan::at(escape.span, "invalid octal escape in string"),
+                        )
+                    })?;
+                    (byte, num_octal_bytes)
+                }
+                _ => {
+                    return Err(ParseLineError::new(
+                        source,
+                        location,
+                        miette::LabeledSpan::at(escape.span, "invalid string escape"),
+                    ))?;
+                }
             };
 
-            Ok(jiff::SignedDuration::new(seconds, nanoseconds))
-        });
-    let duration = signed_duration.clone().try_map(|duration, span| {
-        std::time::Duration::try_from(duration).map_err(|e| Rich::custom(span, e))
-    });
-    let timestamp = signed_duration.try_map(|duration, span| {
-        jiff::Timestamp::from_duration(duration).map_err(|e| Rich::custom(span, e))
-    });
+            string.to_mut().push_byte(append);
+            (_, rest) = escape.split_at(consumed);
 
-    let syscall_duration = duration.delimited_by(just("<"), just(">"));
+            let literal_string_end = rest
+                .map(|string| string.find(&['"', '\\']))
+                .into_result()
+                .map_err(|blame| {
+                    ParseLineError::new(
+                        source,
+                        location,
+                        miette::LabeledSpan::at(blame.span, "unexpected string end"),
+                    )
+                })?;
 
-    // let syscall_result = one_of('a'..'z')
-    //     .or(one_of('A'..'Z'))
-    //     .or(one_of('0'..'9'))
-    //     .or(one_of("_+-?"))
-    //     .repeated()
-    //     .clone()
-    //     .map(Some)
-    //     .or(just("?").map(|_| None))
-    //     .padded()
-    //     .then(
-    //         any()
-    //             .and_is(syscall_duration.clone().then(end()).not())
-    //             .repeated()
-    //             .to_slice()
-    //             .map(String::from),
-    //     )
-    //     .map(|(value, message)| SyscallResult { value, message });
+            let literal_string;
+            (literal_string, rest) = rest.split_at(literal_string_end.value);
 
-    let syscall = group((
-        text::ident(),
-        any()
-            .repeated()
-            .to_slice()
-            .delimited_by(just("("), just(") = ")),
-        any().repeated().to_slice(),
-        just(" ").ignore_then(syscall_duration),
-    ))
-    .map(|(name, args, result, duration)| {
-        Event::Syscall(SyscallEvent {
-            name,
-            args,
-            result,
-            duration,
-        })
-    });
-    let exited = any()
-        .repeated()
-        .to_slice()
-        .delimited_by(just("+++ exited with "), just(" +++"))
-        .map(|code| Event::Exited { code });
-    let killed_by = any()
-        .repeated()
-        .to_slice()
-        .delimited_by(just("+++ killed by "), just(" +++"))
-        .map(|signal| Event::KilledBy { signal });
-    let signal = any()
-        .repeated()
-        .to_slice()
-        .delimited_by(just("--- "), just(" ---"))
-        .map(|signal| Event::Signal { signal });
+            string
+                .to_mut()
+                .extend_from_slice(literal_string.value.as_bytes());
+        }
 
-    let event = choice((syscall, exited, killed_by, signal));
+        let rest = rest.strip_prefix("\"").map_err(|blame| {
+            ParseLineError::new(
+                source,
+                location,
+                miette::LabeledSpan::at(blame.span, "expected closing quote for string"),
+            )
+        })?;
 
-    group((
-        pid.then_ignore(just(" ")),
-        timestamp.then_ignore(just(" ")),
-        event.then_ignore(end()),
-    ))
-    .map(|(pid, timestamp, event)| Line {
-        pid,
-        timestamp,
-        event,
-    })
+        if let Ok(rest) = rest.strip_prefix("...") {
+            Ok((Value::TruncatedString(string), rest))
+        } else {
+            Ok((Value::String(string), rest))
+        }
+    } else {
+        panic!();
+    }
 }
+
+fn parse_field<'a>(
+    input: Blame<&'a str>,
+    source: &str,
+    location: &super::LineSourceLocation,
+) -> Result<(Field<'a>, Blame<&'a str>), ParseLineError> {
+    let name_and_rest = input.split_once("=").ok().and_then(|(name, rest)| {
+        let name = name.trim().non_empty().ok()?;
+        let rest = rest.trim_start().non_empty().ok()?;
+
+        Some((name, rest)).filter(|(name, _)| is_ident(name.value))
+    });
+    if let Some((name, rest)) = name_and_rest {
+        let (value, rest) = parse_value(rest, source, location)?;
+        Ok((
+            Field {
+                name: Some(name.value),
+                value,
+            },
+            rest,
+        ))
+    } else {
+        let (value, rest) = parse_value(input, source, location)?;
+        Ok((Field { name: None, value }, rest))
+    }
+}
+
+fn is_ident(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first_char) = chars.next() else {
+        return false;
+    };
+
+    matches!(first_char, 'a'..='z' | 'A'..='Z' | '_')
+        && chars.all(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use crate::strace::Value;
+
+    fn parse_value(s: &str) -> miette::Result<Value<'_>> {
+        let (value, rest) = super::parse_value(
+            s.into(),
+            s,
+            &crate::strace::LineSourceLocation {
+                filename: "<test>",
+                line_index: 0,
+            },
+        )?;
+        rest.empty().map_err(|blame| {
+            miette::miette!("unexpected content after value: {:?}", blame.value)
+        })?;
+
+        Ok(value)
+    }
+
+    fn string_value(s: impl AsRef<[u8]>) -> Value<'static> {
+        Value::String(Cow::Owned(bstr::BString::new(s.as_ref().to_vec())))
+    }
+
+    fn truncated_string_value(s: impl AsRef<[u8]>) -> Value<'static> {
+        Value::TruncatedString(Cow::Owned(bstr::BString::new(s.as_ref().to_vec())))
+    }
+
+    #[test]
+    fn test_parse_string() {
+        assert_eq!(parse_value(r#""""#).unwrap(), string_value(""));
+        assert_eq!(parse_value(r#""foo""#).unwrap(), string_value("foo"));
+        assert_eq!(
+            parse_value(r#""foo\"bar\"""#).unwrap(),
+            string_value(r#"foo"bar""#)
+        );
+        assert_eq!(
+            parse_value(r#""foo\nbar""#).unwrap(),
+            string_value("foo\nbar")
+        );
+        assert_eq!(
+            parse_value(r#""foo 🦀 bar""#).unwrap(),
+            string_value("foo 🦀 bar")
+        );
+        assert_eq!(
+            parse_value(r#""foo \xFf bar""#).unwrap(),
+            string_value(b"foo \xff bar")
+        );
+        assert_eq!(
+            parse_value(r#""foo \0 bar""#).unwrap(),
+            string_value(b"foo \x00 bar")
+        );
+        assert_eq!(
+            parse_value(r#""foo \10 bar""#).unwrap(),
+            string_value(b"foo \x08 bar")
+        );
+        assert_eq!(
+            parse_value(r#""foo \177 bar""#).unwrap(),
+            string_value(b"foo \x7F bar")
+        );
+        assert_eq!(
+            parse_value(r#""foo \178 bar""#).unwrap(),
+            string_value(b"foo \x0F8 bar")
+        );
+        assert_eq!(
+            parse_value(r#""foo \377""#).unwrap(),
+            string_value(b"foo \xFF")
+        );
+        assert_eq!(
+            parse_value(r#""foo \37""#).unwrap(),
+            string_value(b"foo \x1F")
+        );
+        assert_eq!(
+            parse_value(r#""foo \3""#).unwrap(),
+            string_value(b"foo \x03")
+        );
+    }
+
+    #[test]
+    fn test_parse_truncated_string() {
+        assert_eq!(parse_value(r#"""..."#).unwrap(), truncated_string_value(""));
+        assert_eq!(
+            parse_value(r#""foo"..."#).unwrap(),
+            truncated_string_value("foo")
+        );
+        assert_eq!(
+            parse_value(r#""foo\"bar\""..."#).unwrap(),
+            truncated_string_value(r#"foo"bar""#)
+        );
+        assert_eq!(
+            parse_value(r#""foo\nbar"..."#).unwrap(),
+            truncated_string_value("foo\nbar")
+        );
+        assert_eq!(
+            parse_value(r#""foo 🦀 bar"..."#).unwrap(),
+            truncated_string_value("foo 🦀 bar")
+        );
+        assert_eq!(
+            parse_value(r#""foo \xFf bar"..."#).unwrap(),
+            truncated_string_value(b"foo \xff bar")
+        );
+        assert_eq!(
+            parse_value(r#""foo \0 bar"..."#).unwrap(),
+            truncated_string_value(b"foo \x00 bar")
+        );
+        assert_eq!(
+            parse_value(r#""foo \10 bar"..."#).unwrap(),
+            truncated_string_value(b"foo \x08 bar")
+        );
+        assert_eq!(
+            parse_value(r#""foo \177 bar"..."#).unwrap(),
+            truncated_string_value(b"foo \x7F bar")
+        );
+        assert_eq!(
+            parse_value(r#""foo \178 bar"..."#).unwrap(),
+            truncated_string_value(b"foo \x0F8 bar")
+        );
+        assert_eq!(
+            parse_value(r#""foo \377"..."#).unwrap(),
+            truncated_string_value(b"foo \xFF")
+        );
+        assert_eq!(
+            parse_value(r#""foo \37"..."#).unwrap(),
+            truncated_string_value(b"foo \x1F")
+        );
+        assert_eq!(
+            parse_value(r#""foo \3"..."#).unwrap(),
+            truncated_string_value(b"foo \x03")
+        );
+    }
+}
+// fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line<'a>, ParserError<'a>> {
+//     let pid = text::int(10)
+//         .try_map(|pid: &str, span| pid.parse::<Pid>().map_err(|e| Rich::custom(span, e)));
+
+//     let signed_duration = one_of("+-")
+//         .or_not()
+//         .then(text::int(10))
+//         .to_slice()
+//         .then(
+//             just(".")
+//                 .then(one_of('0'..='9').repeated().at_least(1))
+//                 .to_slice()
+//                 .or_not(),
+//         )
+//         .try_map(|(seconds, fraction): (&str, Option<&str>), span| {
+//             let seconds = seconds.parse::<i64>().map_err(|e| Rich::custom(span, e))?;
+
+//             let nanoseconds = if let Some(fraction) = fraction {
+//                 let fraction = fraction.parse::<f64>().map_err(|e| Rich::custom(span, e))?;
+//                 let nanoseconds = (fraction * 1_000_000_000.0).round() as i32;
+//                 nanoseconds.clamp(0, 999_999_999)
+//             } else {
+//                 0
+//             };
+
+//             Ok(jiff::SignedDuration::new(seconds, nanoseconds))
+//         });
+//     let duration = signed_duration.clone().try_map(|duration, span| {
+//         std::time::Duration::try_from(duration).map_err(|e| Rich::custom(span, e))
+//     });
+//     let timestamp = signed_duration.try_map(|duration, span| {
+//         jiff::Timestamp::from_duration(duration).map_err(|e| Rich::custom(span, e))
+//     });
+
+//     let syscall_duration = duration.delimited_by(just("<"), just(">"));
+
+//     // let syscall_result = one_of('a'..'z')
+//     //     .or(one_of('A'..'Z'))
+//     //     .or(one_of('0'..'9'))
+//     //     .or(one_of("_+-?"))
+//     //     .repeated()
+//     //     .clone()
+//     //     .map(Some)
+//     //     .or(just("?").map(|_| None))
+//     //     .padded()
+//     //     .then(
+//     //         any()
+//     //             .and_is(syscall_duration.clone().then(end()).not())
+//     //             .repeated()
+//     //             .to_slice()
+//     //             .map(String::from),
+//     //     )
+//     //     .map(|(value, message)| SyscallResult { value, message });
+
+//     let syscall = group((
+//         text::ident(),
+//         any()
+//             .repeated()
+//             .to_slice()
+//             .delimited_by(just("("), just(") = ")),
+//         any().repeated().to_slice(),
+//         just(" ").ignore_then(syscall_duration),
+//     ))
+//     .map(|(name, args, result, duration)| {
+//         Event::Syscall(SyscallEvent {
+//             name,
+//             args,
+//             result,
+//             duration,
+//         })
+//     });
+//     let exited = any()
+//         .repeated()
+//         .to_slice()
+//         .delimited_by(just("+++ exited with "), just(" +++"))
+//         .map(|code| Event::Exited { code });
+//     let killed_by = any()
+//         .repeated()
+//         .to_slice()
+//         .delimited_by(just("+++ killed by "), just(" +++"))
+//         .map(|signal| Event::KilledBy { signal });
+//     let signal = any()
+//         .repeated()
+//         .to_slice()
+//         .delimited_by(just("--- "), just(" ---"))
+//         .map(|signal| Event::Signal { signal });
+
+//     let event = choice((syscall, exited, killed_by, signal));
+
+//     group((
+//         pid.then_ignore(just(" ")),
+//         timestamp.then_ignore(just(" ")),
+//         event.then_ignore(end()),
+//     ))
+//     .map(|(pid, timestamp, event)| Line {
+//         pid,
+//         timestamp,
+//         event,
+//     })
+// }
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed to parse strace line")]
