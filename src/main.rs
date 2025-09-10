@@ -1,11 +1,5 @@
 use std::io::BufRead as _;
 
-mod event;
-mod perfetto;
-mod strace;
-
-pub type Pid = libc::pid_t;
-
 fn main() -> miette::Result<()> {
     // let mut emitter = strace::emitter::EventEmitter::default();
     let output_path = std::env::args()
@@ -15,14 +9,14 @@ fn main() -> miette::Result<()> {
 
     let stdin = std::io::stdin().lock();
     let mut perfetto_writer =
-        perfetto::PerfettoOutput::new(std::fs::File::create(output_path).unwrap());
+        systrument::perfetto::PerfettoOutput::new(std::fs::File::create(output_path).unwrap());
 
     for (line_index, line) in stdin.lines().enumerate() {
         let line = line.unwrap();
 
-        let strace = strace::parser::parse_line(
+        let strace = systrument::strace::parser::parse_line(
             &line,
-            &strace::LineSourceLocation {
+            &systrument::strace::LineSourceLocation {
                 filename: "<stdin>",
                 line_index,
             },
