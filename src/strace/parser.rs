@@ -126,7 +126,7 @@ pub fn parse_line<'line, 'loc>(
                 miette::LabeledSpan::at(blame.span, "failed to parse syscall result"),
             )
         })?;
-        let args = input.strip_suffix(")").map_err(|blame| {
+        let args = input.trim_ascii_end().strip_suffix(")").map_err(|blame| {
             ParseLineError::new(
                 line,
                 location,
