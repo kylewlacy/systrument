@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::VecDeque};
 
 use blame_on::{Blame, Span};
 use bstr::ByteVec as _;
@@ -349,23 +349,98 @@ fn parse_value<'a>(input: Blame<&'a str>) -> Result<(Value<'a>, Blame<&'a str>),
     if let Ok(after_annotation_start) = rest.strip_prefix("<") {
         rest = after_annotation_start;
 
-        // TODO: Support escapes, etc
-        let annotation;
-        (annotation, rest) = rest
-            .split_once(">")
-            .map_err(|blame| StraceParseError::new(blame.span, "cannot parse annotation"))?;
+        let mut depth: u32 = 0;
+        let mut annotation = Cow::Borrowed(bstr::BStr::new(&[]));
+
+        loop {
+            let c;
+            (c, rest) = split_char(rest).map_err(|blame| {
+                StraceParseError::new(blame.span, "unterminated annotation, expected '>'")
+            })?;
+
+            match c {
+                '>' if annotation.last() == Some(&b'-') => {
+                    // Treat `->` as part of the annotation, even if we're
+                    // looking for `>` as the closing delimiter
+
+                    // Append the character by either slicing more borrowed data
+                    // from the original string or by appending the char
+                    match &mut annotation {
+                        Cow::Borrowed(_) => {
+                            annotation = Cow::Borrowed(bstr::BStr::new(
+                                &after_annotation_start.value[0..(annotation.len() + c.len_utf8())],
+                            ))
+                        }
+                        Cow::Owned(annotation) => {
+                            annotation.push_char(c);
+                        }
+                    }
+                }
+                '>' => {
+                    if depth == 0 {
+                        // Reached the final closing delimiter, so we're done
+                        // parsing the annotation
+                        break;
+                    };
+
+                    depth -= 1;
+
+                    // Append the character by either slicing more borrowed data
+                    // from the original string or by appending the char
+                    match &mut annotation {
+                        Cow::Borrowed(_) => {
+                            annotation = Cow::Borrowed(bstr::BStr::new(
+                                &after_annotation_start.value[0..(annotation.len() + c.len_utf8())],
+                            ))
+                        }
+                        Cow::Owned(annotation) => {
+                            annotation.push_char(c);
+                        }
+                    }
+                }
+                '\\' => {
+                    // String escape sequence. Parse then append as a byte
+                    // to the annotation
+                    let byte;
+                    (byte, rest) = parse_string_escape_sequence(rest)?;
+                    annotation.to_mut().push_byte(byte);
+                }
+                c => {
+                    // Any other character should be appended like normal
+
+                    // Append the character by either slicing more borrowed data
+                    // from the original string or by appending the char
+                    match &mut annotation {
+                        Cow::Borrowed(_) => {
+                            annotation = Cow::Borrowed(bstr::BStr::new(
+                                &after_annotation_start.value[0..(annotation.len() + c.len_utf8())],
+                            ))
+                        }
+                        Cow::Owned(annotation) => {
+                            annotation.push_char(c);
+                        }
+                    }
+
+                    // If the character is an unescaped opening delimiter,
+                    // increase the depth so we keep the depth balanced
+                    if c == '<' {
+                        depth += 1;
+                    }
+                }
+            }
+        }
 
         if let Ok(after_deleted) = rest.strip_prefix("(deleted)") {
             rest = after_deleted;
             value = Value::Annotated {
                 value: Box::new(value),
-                annotation: Cow::Borrowed(bstr::BStr::new(annotation.value)),
+                annotation,
                 deleted: true,
             };
         } else {
             value = Value::Annotated {
                 value: Box::new(value),
-                annotation: Cow::Borrowed(bstr::BStr::new(annotation.value)),
+                annotation,
                 deleted: false,
             };
         }
@@ -397,6 +472,12 @@ fn parse_value<'a>(input: Blame<&'a str>) -> Result<(Value<'a>, Blame<&'a str>),
     }
 
     Ok((value, rest))
+}
+
+fn split_char<'a>(input: Blame<&'a str>) -> Result<(char, Blame<&'a str>), Blame<&'a str>> {
+    let c = input.value.chars().next().ok_or(input)?;
+    let (_, rest) = input.split_at(c.len_utf8());
+    Ok((c, rest))
 }
 
 fn parse_field<'a>(input: Blame<&'a str>) -> Result<(Field<'a>, Blame<&'a str>), StraceParseError> {
@@ -1001,6 +1082,34 @@ mod tests {
                 "openat",
                 [unnamed(annotated(expr("AT_FDCWD"), "/home/user"))]
             )
+        );
+        assert_eq!(
+            parse_value("16<NETLINK:[ROUTE:2386219]>").unwrap(),
+            annotated(expr("16"), "NETLINK:[ROUTE:2386219]")
+        );
+        assert_eq!(
+            parse_value("16<UNIX-STREAM:[167063691->167059833]>").unwrap(),
+            annotated(expr("16"), "UNIX-STREAM:[167063691->167059833]")
+        );
+        assert_eq!(
+            parse_value(
+                "16<UDPv6:[[2001:db8:1000:1000:1000:100:100:1000]:41629->[2001:db8:1000::1000:1000]:0]>"
+            ).unwrap(),
+            annotated(
+                expr("16"),
+                "UDPv6:[[2001:db8:1000:1000:1000:100:100:1000]:41629->[2001:db8:1000::1000:1000]:0]"
+            )
+        );
+        assert_eq!(
+            parse_value(r#"3</var/home/kyle/Development/scratch/-\"\76\74][\"\\a.txt>"#).unwrap(),
+            annotated(
+                expr("3"),
+                r#"/var/home/kyle/Development/scratch/-"><]["\a.txt"#
+            )
+        );
+        assert_eq!(
+            parse_value("6</foo/bar/baz>(deleted)").unwrap(),
+            annotated_deleted(expr("6"), "/foo/bar/baz")
         );
     }
 
