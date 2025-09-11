@@ -238,45 +238,91 @@ fn parse_value<'a, 'src>(
             fields.push(next_field);
         }
     } else if let Ok(mut rest) = input.strip_prefix("[") {
-        let mut items = vec![];
-        let mut is_first = true;
-        let mut needs_comma = None;
-        loop {
-            if let Ok(rest) = rest.strip_prefix("]") {
-                break Ok((Value::Array(items), rest));
-            }
+        if let Ok(rest) = rest.trim_start().strip_prefix("[")
+            && let Ok((first_index, rest)) = parse_value(rest)
+            && let Ok(mut rest) = rest.trim_start().strip_prefix("] = ")
+        {
+            // Sparse array (e.g. `[ [100] = some_value ]`)
 
-            if rest.value.is_empty() {
-                return Err(StraceParseError::new(rest.span, "unexpected end of array"));
-            }
+            let first_item;
+            (first_item, rest) = parse_value(rest)?;
 
-            if is_first {
-                is_first = false;
-            } else if let Some(true) = needs_comma {
-                rest = rest.strip_prefix(", ").map_err(|blame| {
-                    StraceParseError::new(blame.span, "expected ', ' or ']' after array item")
+            let mut items = vec![(first_index, first_item)];
+            loop {
+                rest = rest.trim_start();
+                if let Ok(rest) = rest.strip_prefix("]") {
+                    break Ok((Value::SparseArray(items), rest));
+                };
+
+                if rest.value.is_empty() {
+                    return Err(StraceParseError::new(
+                        rest.span,
+                        "unexpected end of sparse array",
+                    ));
+                }
+
+                rest = rest.strip_prefix(", [").map_err(|blame| {
+                    StraceParseError::new(
+                        blame.span,
+                        "expected ', [' or ']' after sparse array item",
+                    )
                 })?;
-            } else if let Some(false) = needs_comma {
-                rest = rest.strip_prefix(" ").map_err(|blame| {
-                    StraceParseError::new(blame.span, "expected ' ' after bitset element")
+
+                let index;
+                (index, rest) = parse_value(rest.trim_start())?;
+
+                rest = rest.trim_start().strip_prefix("] = ").map_err(|blame| {
+                    StraceParseError::new(blame.span, "expected '] = ' after sparse array index")
                 })?;
-            } else if let Ok(after_comma) = rest.strip_prefix(", ") {
-                needs_comma = Some(true);
-                rest = after_comma;
-            } else if let Ok(after_space) = rest.strip_prefix(" ") {
-                needs_comma = Some(false);
-                rest = after_space;
-            } else {
-                return Err(StraceParseError::new(
-                    rest.span,
-                    "expected ' ' or ', ' or ']' after first array item",
-                ));
+
+                let item;
+                (item, rest) = parse_value(rest)?;
+
+                items.push((index, item));
             }
+        } else {
+            // Array (`[1, 2, 3]`) or bitset (`[1 2 3]`)
 
-            let next_item;
-            (next_item, rest) = parse_value(rest)?;
+            let mut items = vec![];
+            let mut is_first = true;
+            let mut needs_comma = None;
+            loop {
+                if let Ok(rest) = rest.strip_prefix("]") {
+                    break Ok((Value::Array(items), rest));
+                }
 
-            items.push(next_item);
+                if rest.value.is_empty() {
+                    return Err(StraceParseError::new(rest.span, "unexpected end of array"));
+                }
+
+                if is_first {
+                    is_first = false;
+                } else if let Some(true) = needs_comma {
+                    rest = rest.strip_prefix(", ").map_err(|blame| {
+                        StraceParseError::new(blame.span, "expected ', ' or ']' after array item")
+                    })?;
+                } else if let Some(false) = needs_comma {
+                    rest = rest.strip_prefix(" ").map_err(|blame| {
+                        StraceParseError::new(blame.span, "expected ' ' after bitset element")
+                    })?;
+                } else if let Ok(after_comma) = rest.strip_prefix(", ") {
+                    needs_comma = Some(true);
+                    rest = after_comma;
+                } else if let Ok(after_space) = rest.strip_prefix(" ") {
+                    needs_comma = Some(false);
+                    rest = after_space;
+                } else {
+                    return Err(StraceParseError::new(
+                        rest.span,
+                        "expected ' ' or ', ' or ']' after first array item",
+                    ));
+                }
+
+                let next_item;
+                (next_item, rest) = parse_value(rest)?;
+
+                items.push(next_item);
+            }
         }
     } else if let Ok(mut rest) = input.strip_prefix("~[") {
         let mut items = vec![];
@@ -563,6 +609,10 @@ mod tests {
         Value::Array(items.into_iter().collect())
     }
 
+    fn sparse_array<'a>(items: impl IntoIterator<Item = (Value<'a>, Value<'a>)>) -> Value<'a> {
+        Value::SparseArray(items.into_iter().collect())
+    }
+
     fn struct_value<'a>(fields: impl IntoIterator<Item = Field<'a>>) -> Value<'a> {
         Value::Struct(fields.into_iter().collect())
     }
@@ -813,6 +863,28 @@ mod tests {
                 unnamed(struct_value([unnamed(expr("3"))])),
                 unnamed(struct_value([named("_4", expr("4"))])),
                 named("inner", struct_value([unnamed(expr("AAAA"))]))
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_sparse_array() {
+        assert_eq!(
+            parse_value("[ [1] = 100 ]").unwrap(),
+            sparse_array([(expr("1"), expr("100"))])
+        );
+        assert_eq!(
+            parse_value("[ [1] = 100, [ 2 ] = 200 ]").unwrap(),
+            sparse_array([(expr("1"), expr("100")), (expr("2"), expr("200"))])
+        );
+        assert_eq!(
+            parse_value("[ [FIZZ] = 100, [FIZZ|BUZZ] = [[1] = [1]] ]").unwrap(),
+            sparse_array([
+                (expr("FIZZ"), expr("100")),
+                (
+                    expr("FIZZ|BUZZ"),
+                    sparse_array([(expr("1"), array([expr("1")]))])
+                )
             ])
         );
     }
