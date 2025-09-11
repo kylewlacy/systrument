@@ -50,7 +50,7 @@ enum Value<'a> {
     },
     Commented {
         value: Box<Value<'a>>,
-        comment: String,
+        comment: &'a str,
     },
     Changed {
         from: Box<Value<'a>>,

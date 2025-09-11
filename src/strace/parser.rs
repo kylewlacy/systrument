@@ -117,7 +117,7 @@ fn parse_duration(s: &str) -> Result<jiff::SignedDuration, ()> {
     Ok(jiff::SignedDuration::new(seconds, nanoseconds))
 }
 
-fn parse_value<'a, 'src>(
+fn parse_value_basic<'a>(
     input: Blame<&'a str>,
 ) -> Result<(Value<'a>, Blame<&'a str>), StraceParseError> {
     if let Ok(string) = input.strip_prefix("\"") {
@@ -387,6 +387,61 @@ fn parse_value<'a, 'src>(
     }
 }
 
+fn parse_value<'a>(input: Blame<&'a str>) -> Result<(Value<'a>, Blame<&'a str>), StraceParseError> {
+    let (mut value, mut rest) = parse_value_basic(input)?;
+    if let Ok(after_annotation_start) = rest.strip_prefix("<") {
+        rest = after_annotation_start;
+
+        // TODO: Support escapes, etc
+        let annotation;
+        (annotation, rest) = rest
+            .split_once(">")
+            .map_err(|blame| StraceParseError::new(blame.span, "cannot parse annotation"))?;
+
+        if let Ok(after_deleted) = rest.strip_prefix("(deleted)") {
+            rest = after_deleted;
+            value = Value::Annotated {
+                value: Box::new(value),
+                annotation: Cow::Borrowed(bstr::BStr::new(annotation.value)),
+                deleted: true,
+            };
+        } else {
+            value = Value::Annotated {
+                value: Box::new(value),
+                annotation: Cow::Borrowed(bstr::BStr::new(annotation.value)),
+                deleted: false,
+            };
+        }
+    }
+
+    if let Ok(after_comment_start) = rest.trim_start().strip_prefix("/*") {
+        rest = after_comment_start;
+
+        let comment;
+        (comment, rest) = rest.split_once("*/").map_err(|blame| {
+            StraceParseError::new(blame.span, "unterminated comment, expected '*/'")
+        })?;
+
+        value = Value::Commented {
+            value: Box::new(value),
+            comment: comment.value.trim(),
+        };
+    }
+
+    if let Ok(after_changed) = rest.trim_start().strip_prefix("=>") {
+        rest = after_changed.trim_start();
+
+        let to_value;
+        (to_value, rest) = parse_value(rest)?;
+        value = Value::Changed {
+            from: Box::new(value),
+            to: Box::new(to_value),
+        };
+    }
+
+    Ok((value, rest))
+}
+
 fn parse_field<'a>(input: Blame<&'a str>) -> Result<(Field<'a>, Blame<&'a str>), StraceParseError> {
     let name_and_rest = input.split_once("=").ok().and_then(|(name, rest)| {
         let name = name.trim().non_empty().ok()?;
@@ -629,6 +684,36 @@ mod tests {
         Field {
             name: Some(name),
             value,
+        }
+    }
+
+    fn annotated(value: Value<'_>, annotation: impl AsRef<[u8]>) -> Value<'_> {
+        Value::Annotated {
+            value: Box::new(value),
+            annotation: Cow::Owned(bstr::BString::new(annotation.as_ref().to_vec())),
+            deleted: false,
+        }
+    }
+
+    fn annotated_deleted(value: Value<'_>, annotation: impl AsRef<[u8]>) -> Value<'_> {
+        Value::Annotated {
+            value: Box::new(value),
+            annotation: Cow::Owned(bstr::BString::new(annotation.as_ref().to_vec())),
+            deleted: true,
+        }
+    }
+
+    fn commented<'a>(value: Value<'a>, comment: &'a str) -> Value<'a> {
+        Value::Commented {
+            value: Box::new(value),
+            comment,
+        }
+    }
+
+    fn changed<'a>(from: Value<'a>, to: Value<'a>) -> Value<'a> {
+        Value::Changed {
+            from: Box::new(from),
+            to: Box::new(to),
         }
     }
 
@@ -886,6 +971,55 @@ mod tests {
                     sparse_array([(expr("1"), array([expr("1")]))])
                 )
             ])
+        );
+    }
+
+    #[test]
+    fn test_parse_annotated() {
+        assert_eq!(
+            parse_value("6</foo/bar/baz>").unwrap(),
+            annotated(expr("6"), "/foo/bar/baz")
+        );
+        assert_eq!(
+            parse_value("AT_FDCWD<hello>").unwrap(),
+            annotated(expr("AT_FDCWD"), "hello")
+        );
+        assert_eq!(
+            parse_value("openat(AT_FDCWD</home/user>)").unwrap(),
+            fn_call(
+                "openat",
+                [unnamed(annotated(expr("AT_FDCWD"), "/home/user"))]
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_commented() {
+        assert_eq!(
+            parse_value("100 /* hello! */").unwrap(),
+            commented(expr("100"), "hello!")
+        );
+        assert_eq!(
+            parse_value("{st_atime=1755889791 /* 2025-08-22T12:09:51.972352920-0700 */}").unwrap(),
+            struct_value([named(
+                "st_atime",
+                commented(expr("1755889791"), "2025-08-22T12:09:51.972352920-0700")
+            )])
+        );
+    }
+
+    #[test]
+    fn test_parse_changed() {
+        assert_eq!(
+            parse_value("FOO => BAR").unwrap(),
+            changed(expr("FOO"), expr("BAR")),
+        );
+        assert_eq!(
+            parse_value("{a=foo /* abc */ => bar /* def */}").unwrap(),
+            struct_value([named(
+                "a",
+                changed(commented(expr("foo"), "abc"), commented(expr("bar"), "def"))
+            )]),
         );
     }
 }
