@@ -42,7 +42,7 @@ enum Value<'a> {
     Struct(Vec<Field<'a>>),
     SparseArray(Vec<(Value<'a>, Value<'a>)>),
     Array(Vec<Value<'a>>),
-    NotBitSet(Vec<Value<'a>>),
+    NotBitset(Vec<Value<'a>>),
     Annotated {
         value: Box<Value<'a>>,
         annotation: Cow<'a, bstr::BStr>,
@@ -77,7 +77,7 @@ impl Value<'_> {
             Self::Struct(..) => None,
             Self::SparseArray(..) => None,
             Self::Array(..) => None,
-            Self::NotBitSet(..) => None,
+            Self::NotBitset(..) => None,
             Self::Annotated {
                 value,
                 annotation,

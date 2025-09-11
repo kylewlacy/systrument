@@ -269,7 +269,7 @@ fn parse_value<'a, 'src>(
             } else {
                 return Err(StraceParseError::new(
                     rest.span,
-                    "expected ' ' or ', ' or ']' first array item",
+                    "expected ' ' or ', ' or ']' after first array item",
                 ));
             }
 
@@ -277,6 +277,56 @@ fn parse_value<'a, 'src>(
             (next_item, rest) = parse_value(rest)?;
 
             items.push(next_item);
+        }
+    } else if let Ok(mut rest) = input.strip_prefix("~[") {
+        let mut items = vec![];
+        let mut is_first = true;
+        loop {
+            if let Ok(rest) = rest.strip_prefix("]") {
+                break Ok((Value::NotBitset(items), rest));
+            }
+
+            if rest.value.is_empty() {
+                return Err(StraceParseError::new(rest.span, "unexpected end of bitset"));
+            }
+
+            if !is_first {
+                rest = rest.strip_prefix(" ").map_err(|blame| {
+                    StraceParseError::new(blame.span, "expected ' ' or ']' after bitset element")
+                })?;
+            }
+            is_first = false;
+
+            let next_item;
+            (next_item, rest) = parse_value(rest)?;
+
+            items.push(next_item);
+        }
+    } else if let Ok(mut rest) = input.trim_start().strip_prefix("{") {
+        let mut fields = vec![];
+        let mut is_first = true;
+        loop {
+            rest = rest.trim_start();
+
+            if let Ok(rest) = rest.strip_prefix("}") {
+                break Ok((Value::Struct(fields), rest));
+            }
+
+            if rest.value.is_empty() {
+                return Err(StraceParseError::new(rest.span, "unexpected end of struct"));
+            }
+
+            if !is_first {
+                rest = rest.strip_prefix(",").map_err(|blame| {
+                    StraceParseError::new(blame.span, "expected ',' or '}' after struct field")
+                })?;
+            }
+            is_first = false;
+
+            let next_field;
+            (next_field, rest) = parse_field(rest)?;
+
+            fields.push(next_field);
         }
     } else if input.value.starts_with(|c| is_basic_expression_char(c)) {
         let end_basic_expr = input
@@ -513,6 +563,14 @@ mod tests {
         Value::Array(items.into_iter().collect())
     }
 
+    fn struct_value<'a>(fields: impl IntoIterator<Item = Field<'a>>) -> Value<'a> {
+        Value::Struct(fields.into_iter().collect())
+    }
+
+    fn not_bitset<'a>(items: impl IntoIterator<Item = Value<'a>>) -> Value<'a> {
+        Value::NotBitset(items.into_iter().collect())
+    }
+
     fn unnamed(value: Value) -> Field {
         Field { name: None, value }
     }
@@ -691,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_array_bitset() {
+    fn test_parse_bitset_as_array() {
         assert_eq!(parse_value("[]").unwrap(), array([]));
         assert_eq!(parse_value("[1]").unwrap(), array([expr("1")]));
         assert_eq!(parse_value("[1 2]").unwrap(), array([expr("1"), expr("2")]));
@@ -706,6 +764,55 @@ mod tests {
                 expr("2"),
                 array([expr("a"), expr("b"), expr("c")]),
                 array([expr("d"), expr("e"), expr("f")])
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_not_bitset() {
+        assert_eq!(parse_value("~[]").unwrap(), not_bitset([]));
+        assert_eq!(parse_value("~[1]").unwrap(), not_bitset([expr("1")]));
+        assert_eq!(
+            parse_value("~[1 2]").unwrap(),
+            not_bitset([expr("1"), expr("2")])
+        );
+        assert_eq!(
+            parse_value("~[1 2 BUCKLE_MY_SHOE]").unwrap(),
+            not_bitset([expr("1"), expr("2"), expr("BUCKLE_MY_SHOE")])
+        );
+        assert_eq!(
+            parse_value("~[1 2 3*4*5]").unwrap(),
+            not_bitset([expr("1"), expr("2"), expr("3*4*5")])
+        );
+    }
+
+    #[test]
+    fn test_parse_struct() {
+        assert_eq!(parse_value("{}").unwrap(), struct_value([]));
+        assert_eq!(
+            parse_value("{1}").unwrap(),
+            struct_value([unnamed(expr("1"))])
+        );
+        assert_eq!(
+            parse_value("{ 1 }").unwrap(),
+            struct_value([unnamed(expr("1"))])
+        );
+        assert_eq!(
+            parse_value("{ a = 1 }").unwrap(),
+            struct_value([named("a", expr("1"))])
+        );
+        assert_eq!(
+            parse_value("{ a = 1, b = 2}").unwrap(),
+            struct_value([named("a", expr("1")), named("b", expr("2"))])
+        );
+        assert_eq!(
+            parse_value("{ a = 1, b = 2, { 3 }, {_4 = 4 }, inner = {AAAA}}").unwrap(),
+            struct_value([
+                named("a", expr("1")),
+                named("b", expr("2")),
+                unnamed(struct_value([unnamed(expr("3"))])),
+                unnamed(struct_value([named("_4", expr("4"))])),
+                named("inner", struct_value([unnamed(expr("AAAA"))]))
             ])
         );
     }
