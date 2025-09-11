@@ -37,7 +37,7 @@ enum Value<'a> {
     Expression(&'a str),
     FunctionCall {
         function: &'a str,
-        args: Vec<Value<'a>>,
+        args: Vec<Field<'a>>,
     },
     Struct(Vec<Field<'a>>),
     SparseArray(Vec<(Value<'a>, Value<'a>)>),

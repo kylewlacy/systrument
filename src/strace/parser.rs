@@ -199,8 +199,44 @@ fn parse_value<'a, 'src>(
         } else {
             Ok((Value::String(string), rest))
         }
+    } else if let Ok((ident, rest)) = parse_ident(input)
+        && let Ok(mut rest) = rest.strip_prefix("(")
+    {
+        let mut fields = vec![];
+        let mut needs_comma = false;
+        loop {
+            if let Ok(rest) = rest.strip_prefix(")") {
+                break Ok((
+                    Value::FunctionCall {
+                        function: ident.value,
+                        args: fields,
+                    },
+                    rest,
+                ));
+            }
+
+            if needs_comma {
+                rest = rest.strip_prefix(", ").map_err(|blame| {
+                    StraceParseError::new(blame.span, "expected comma in function argument list")
+                })?;
+            }
+
+            let next_field;
+            (next_field, rest) = parse_field(rest.trim_start())?;
+            needs_comma = true;
+
+            fields.push(next_field);
+        }
+    } else if input.value.starts_with(|c| is_basic_expression_char(c)) {
+        let end_basic_expr = input
+            .value
+            .find(|c| !is_basic_expression_char(c))
+            .unwrap_or(input.value.len());
+        let (basic_expr, rest) = input.split_at(end_basic_expr);
+
+        Ok((Value::Expression(basic_expr.value), rest))
     } else {
-        panic!();
+        Err(StraceParseError::new(input.span, "unrecognized expression"))
     }
 }
 
@@ -226,15 +262,39 @@ fn parse_field<'a>(input: Blame<&'a str>) -> Result<(Field<'a>, Blame<&'a str>),
     }
 }
 
+fn parse_ident<'a>(
+    input: Blame<&'a str>,
+) -> Result<(Blame<&'a str>, Blame<&'a str>), Blame<&'a str>> {
+    let ident_end_index = input
+        .value
+        .char_indices()
+        .take_while(|(i, c)| {
+            if *i == 0 {
+                matches!(c, 'a'..='z' | 'A'..='Z' | '_')
+            } else {
+                matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_')
+            }
+        })
+        .map(|(i, _)| i)
+        .last()
+        .ok_or(input)?;
+
+    let (ident, rest) = input.split_at(ident_end_index + 1);
+    Ok((ident, rest))
+}
+
 fn is_ident(value: &str) -> bool {
-    let mut chars = value.chars();
-    let Some(first_char) = chars.next() else {
+    let Ok((ident, rest)) = parse_ident(Blame::new_str(value)) else {
         return false;
     };
 
-    matches!(first_char, 'a'..='z' | 'A'..='Z' | '_')
-        && chars.all(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
+    rest.value.is_empty()
 }
+
+fn is_basic_expression_char(c: char) -> bool {
+    matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '+' | '-' | '*' | '.' | '/' | '^' | '&' | '|')
+}
+
 // fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line<'a>, ParserError<'a>> {
 //     let pid = text::int(10)
 //         .try_map(|pid: &str, span| pid.parse::<Pid>().map_err(|e| Rich::custom(span, e)));
@@ -364,125 +424,191 @@ impl miette::Diagnostic for StraceParseError {
 mod tests {
     use std::borrow::Cow;
 
-    use crate::strace::Value;
+    use crate::strace::{Field, Value};
 
     fn parse_value(s: &str) -> miette::Result<Value<'_>> {
-        let (value, rest) = super::parse_value(s.into())?;
+        let (value, rest) = super::parse_value(s.into())
+            .map_err(|err| miette::Report::new(err).with_source_code(s.to_string()))?;
         rest.empty().map_err(|blame| {
-            miette::miette!("unexpected content after value: {:?}", blame.value)
+            miette::Report::new(crate::strace::parser::StraceParseError::new(
+                blame.span,
+                "parse_value did not consume whole input",
+            ))
         })?;
 
         Ok(value)
     }
 
-    fn string_value(s: impl AsRef<[u8]>) -> Value<'static> {
+    fn string(s: impl AsRef<[u8]>) -> Value<'static> {
         Value::String(Cow::Owned(bstr::BString::new(s.as_ref().to_vec())))
     }
 
-    fn truncated_string_value(s: impl AsRef<[u8]>) -> Value<'static> {
+    fn truncated_string(s: impl AsRef<[u8]>) -> Value<'static> {
         Value::TruncatedString(Cow::Owned(bstr::BString::new(s.as_ref().to_vec())))
+    }
+
+    fn expr(expr: &'_ str) -> Value<'_> {
+        Value::Expression(expr)
+    }
+
+    fn fn_call<'a>(function: &'a str, args: impl IntoIterator<Item = Field<'a>>) -> Value<'a> {
+        Value::FunctionCall {
+            function,
+            args: args.into_iter().collect(),
+        }
+    }
+
+    fn unnamed(value: Value) -> Field {
+        Field { name: None, value }
+    }
+
+    fn named<'a>(name: &'a str, value: Value<'a>) -> Field<'a> {
+        Field {
+            name: Some(name),
+            value,
+        }
     }
 
     #[test]
     fn test_parse_string() {
-        assert_eq!(parse_value(r#""""#).unwrap(), string_value(""));
-        assert_eq!(parse_value(r#""foo""#).unwrap(), string_value("foo"));
+        assert_eq!(parse_value(r#""""#).unwrap(), string(""));
+        assert_eq!(parse_value(r#""foo""#).unwrap(), string("foo"));
         assert_eq!(
             parse_value(r#""foo\"bar\"""#).unwrap(),
-            string_value(r#"foo"bar""#)
+            string(r#"foo"bar""#)
         );
-        assert_eq!(
-            parse_value(r#""foo\nbar""#).unwrap(),
-            string_value("foo\nbar")
-        );
+        assert_eq!(parse_value(r#""foo\nbar""#).unwrap(), string("foo\nbar"));
         assert_eq!(
             parse_value(r#""foo 🦀 bar""#).unwrap(),
-            string_value("foo 🦀 bar")
+            string("foo 🦀 bar")
         );
         assert_eq!(
             parse_value(r#""foo \xFf bar""#).unwrap(),
-            string_value(b"foo \xff bar")
+            string(b"foo \xff bar")
         );
         assert_eq!(
             parse_value(r#""foo \0 bar""#).unwrap(),
-            string_value(b"foo \x00 bar")
+            string(b"foo \x00 bar")
         );
         assert_eq!(
             parse_value(r#""foo \10 bar""#).unwrap(),
-            string_value(b"foo \x08 bar")
+            string(b"foo \x08 bar")
         );
         assert_eq!(
             parse_value(r#""foo \177 bar""#).unwrap(),
-            string_value(b"foo \x7F bar")
+            string(b"foo \x7F bar")
         );
         assert_eq!(
             parse_value(r#""foo \178 bar""#).unwrap(),
-            string_value(b"foo \x0F8 bar")
+            string(b"foo \x0F8 bar")
         );
-        assert_eq!(
-            parse_value(r#""foo \377""#).unwrap(),
-            string_value(b"foo \xFF")
-        );
-        assert_eq!(
-            parse_value(r#""foo \37""#).unwrap(),
-            string_value(b"foo \x1F")
-        );
-        assert_eq!(
-            parse_value(r#""foo \3""#).unwrap(),
-            string_value(b"foo \x03")
-        );
+        assert_eq!(parse_value(r#""foo \377""#).unwrap(), string(b"foo \xFF"));
+        assert_eq!(parse_value(r#""foo \37""#).unwrap(), string(b"foo \x1F"));
+        assert_eq!(parse_value(r#""foo \3""#).unwrap(), string(b"foo \x03"));
     }
 
     #[test]
     fn test_parse_truncated_string() {
-        assert_eq!(parse_value(r#"""..."#).unwrap(), truncated_string_value(""));
-        assert_eq!(
-            parse_value(r#""foo"..."#).unwrap(),
-            truncated_string_value("foo")
-        );
+        assert_eq!(parse_value(r#"""..."#).unwrap(), truncated_string(""));
+        assert_eq!(parse_value(r#""foo"..."#).unwrap(), truncated_string("foo"));
         assert_eq!(
             parse_value(r#""foo\"bar\""..."#).unwrap(),
-            truncated_string_value(r#"foo"bar""#)
+            truncated_string(r#"foo"bar""#)
         );
         assert_eq!(
             parse_value(r#""foo\nbar"..."#).unwrap(),
-            truncated_string_value("foo\nbar")
+            truncated_string("foo\nbar")
         );
         assert_eq!(
             parse_value(r#""foo 🦀 bar"..."#).unwrap(),
-            truncated_string_value("foo 🦀 bar")
+            truncated_string("foo 🦀 bar")
         );
         assert_eq!(
             parse_value(r#""foo \xFf bar"..."#).unwrap(),
-            truncated_string_value(b"foo \xff bar")
+            truncated_string(b"foo \xff bar")
         );
         assert_eq!(
             parse_value(r#""foo \0 bar"..."#).unwrap(),
-            truncated_string_value(b"foo \x00 bar")
+            truncated_string(b"foo \x00 bar")
         );
         assert_eq!(
             parse_value(r#""foo \10 bar"..."#).unwrap(),
-            truncated_string_value(b"foo \x08 bar")
+            truncated_string(b"foo \x08 bar")
         );
         assert_eq!(
             parse_value(r#""foo \177 bar"..."#).unwrap(),
-            truncated_string_value(b"foo \x7F bar")
+            truncated_string(b"foo \x7F bar")
         );
         assert_eq!(
             parse_value(r#""foo \178 bar"..."#).unwrap(),
-            truncated_string_value(b"foo \x0F8 bar")
+            truncated_string(b"foo \x0F8 bar")
         );
         assert_eq!(
             parse_value(r#""foo \377"..."#).unwrap(),
-            truncated_string_value(b"foo \xFF")
+            truncated_string(b"foo \xFF")
         );
         assert_eq!(
             parse_value(r#""foo \37"..."#).unwrap(),
-            truncated_string_value(b"foo \x1F")
+            truncated_string(b"foo \x1F")
         );
         assert_eq!(
             parse_value(r#""foo \3"..."#).unwrap(),
-            truncated_string_value(b"foo \x03")
+            truncated_string(b"foo \x03")
+        );
+    }
+
+    #[test]
+    fn test_parse_basic_expr() {
+        assert_eq!(parse_value("500").unwrap(), expr("500"));
+        assert_eq!(parse_value("+0.5").unwrap(), expr("+0.5"));
+        assert_eq!(parse_value("0x5*02/4").unwrap(), expr("0x5*02/4"));
+        assert_eq!(
+            parse_value("BLAH_BLAH_BLAH5").unwrap(),
+            expr("BLAH_BLAH_BLAH5")
+        );
+    }
+
+    #[test]
+    fn test_parse_function_call() {
+        assert_eq!(parse_value("foo()").unwrap(), fn_call("foo", []));
+        assert_eq!(
+            parse_value("foo(1)").unwrap(),
+            fn_call("foo", [unnamed(expr("1"))])
+        );
+        assert_eq!(
+            parse_value("foo(1, 2)").unwrap(),
+            fn_call("foo", [unnamed(expr("1")), unnamed(expr("2"))])
+        );
+        assert_eq!(
+            parse_value("foo(1, 2, 3)").unwrap(),
+            fn_call(
+                "foo",
+                [unnamed(expr("1")), unnamed(expr("2")), unnamed(expr("3"))]
+            )
+        );
+        assert_eq!(
+            parse_value("foo(param1 = 1, param2 = 2)").unwrap(),
+            fn_call(
+                "foo",
+                [named("param1", expr("1")), named("param2", expr("2"))]
+            )
+        );
+        assert_eq!(
+            parse_value("foo(fizz(), buzz = buzz(a = 1, b = 2), bar(baz, qux = qux()))").unwrap(),
+            fn_call(
+                "foo",
+                [
+                    unnamed(fn_call("fizz", [])),
+                    named(
+                        "buzz",
+                        fn_call("buzz", [named("a", expr("1")), named("b", expr("2"))])
+                    ),
+                    unnamed(fn_call(
+                        "bar",
+                        [unnamed(expr("baz")), named("qux", fn_call("qux", []))]
+                    ))
+                ]
+            )
         );
     }
 }
