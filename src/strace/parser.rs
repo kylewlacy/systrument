@@ -129,53 +129,10 @@ fn parse_value_basic<'a>(
         let mut string = Cow::Borrowed(bstr::BStr::new(literal_string.value.as_bytes()));
 
         while let Ok(escape) = rest.strip_prefix("\\") {
-            let escape_byte =
-                escape.as_bytes().value.get(0).copied().ok_or_else(|| {
-                    StraceParseError::new(escape.span, "unexpected end of string")
-                })?;
-            let (append, consumed) = match escape_byte {
-                b'\\' => (b'\\', 1),
-                b'a' => (0x07, 1),
-                b'b' => (0x08, 1),
-                b'e' => (0x1B, 1),
-                b'f' => (0x0C, 1),
-                b'n' => (b'\n', 1),
-                b'r' => (b'\r', 1),
-                b't' => (b'\t', 1),
-                b'v' => (0x0B, 1),
-                b'\'' => (b'\'', 1),
-                b'"' => (b'"', 1),
-                b'?' => (b'?', 1),
-                b'x' => {
-                    let hex = escape.value.get(1..3).ok_or_else(|| {
-                        StraceParseError::new(escape.span, "unexpected end of string")
-                    })?;
-                    let byte = u8::from_str_radix(hex, 16).map_err(|e| {
-                        StraceParseError::new(escape.span, "invalid hex escape in string")
-                    })?;
-                    (byte, 3)
-                }
-                b'0'..b'7' => {
-                    let escaped_bytes = &escape.value.as_bytes()[0..];
-                    let num_octal_bytes = escaped_bytes
-                        .iter()
-                        .take(3)
-                        .take_while(|b| (b'0'..=b'7').contains(b))
-                        .count();
-                    let octal_bytes = &escaped_bytes[0..num_octal_bytes];
-                    let octal = std::str::from_utf8(octal_bytes).unwrap();
-                    let byte = u8::from_str_radix(octal, 8).map_err(|e| {
-                        StraceParseError::new(escape.span, "invalid octal escape in string")
-                    })?;
-                    (byte, num_octal_bytes)
-                }
-                _ => {
-                    return Err(StraceParseError::new(escape.span, "invalid string escape"));
-                }
-            };
+            let byte;
+            (byte, rest) = parse_string_escape_sequence(escape)?;
 
-            string.to_mut().push_byte(append);
-            (_, rest) = escape.split_at(consumed);
+            string.to_mut().push_byte(byte);
 
             let literal_string_end = rest
                 .map(|string| string.find(&['"', '\\']))
@@ -462,6 +419,60 @@ fn parse_field<'a>(input: Blame<&'a str>) -> Result<(Field<'a>, Blame<&'a str>),
         let (value, rest) = parse_value(input)?;
         Ok((Field { name: None, value }, rest))
     }
+}
+
+fn parse_string_escape_sequence<'a>(
+    escape: Blame<&'a str>,
+) -> Result<(u8, Blame<&'a str>), StraceParseError> {
+    let escape_byte = escape
+        .as_bytes()
+        .value
+        .get(0)
+        .copied()
+        .ok_or_else(|| StraceParseError::new(escape.span, "unexpected end of string"))?;
+    let (byte, consumed) = match escape_byte {
+        b'\\' => (b'\\', 1),
+        b'a' => (0x07, 1),
+        b'b' => (0x08, 1),
+        b'e' => (0x1B, 1),
+        b'f' => (0x0C, 1),
+        b'n' => (b'\n', 1),
+        b'r' => (b'\r', 1),
+        b't' => (b'\t', 1),
+        b'v' => (0x0B, 1),
+        b'\'' => (b'\'', 1),
+        b'"' => (b'"', 1),
+        b'?' => (b'?', 1),
+        b'x' => {
+            let hex = escape
+                .value
+                .get(1..3)
+                .ok_or_else(|| StraceParseError::new(escape.span, "unexpected end of string"))?;
+            let byte = u8::from_str_radix(hex, 16)
+                .map_err(|e| StraceParseError::new(escape.span, "invalid hex escape in string"))?;
+            (byte, 3)
+        }
+        b'0'..b'7' => {
+            let escaped_bytes = &escape.value.as_bytes()[0..];
+            let num_octal_bytes = escaped_bytes
+                .iter()
+                .take(3)
+                .take_while(|b| (b'0'..=b'7').contains(b))
+                .count();
+            let octal_bytes = &escaped_bytes[0..num_octal_bytes];
+            let octal = std::str::from_utf8(octal_bytes).unwrap();
+            let byte = u8::from_str_radix(octal, 8).map_err(|e| {
+                StraceParseError::new(escape.span, "invalid octal escape in string")
+            })?;
+            (byte, num_octal_bytes)
+        }
+        _ => {
+            return Err(StraceParseError::new(escape.span, "invalid string escape"));
+        }
+    };
+
+    let (_, rest) = escape.split_at(consumed);
+    Ok((byte, rest))
 }
 
 fn parse_ident<'a>(
