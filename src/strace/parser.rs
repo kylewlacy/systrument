@@ -452,7 +452,7 @@ fn parse_string_escape_sequence<'a>(
                 .map_err(|e| StraceParseError::new(escape.span, "invalid hex escape in string"))?;
             (byte, 3)
         }
-        b'0'..b'7' => {
+        b'0'..=b'7' => {
             let escaped_bytes = &escape.value.as_bytes()[0..];
             let num_octal_bytes = escaped_bytes
                 .iter()
