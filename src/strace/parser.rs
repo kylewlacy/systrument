@@ -215,9 +215,19 @@ fn parse_value<'a, 'src>(
                 ));
             }
 
+            if rest.value.is_empty() {
+                return Err(StraceParseError::new(
+                    rest.span,
+                    "unexpected end of function argument list",
+                ));
+            }
+
             if needs_comma {
                 rest = rest.strip_prefix(", ").map_err(|blame| {
-                    StraceParseError::new(blame.span, "expected comma in function argument list")
+                    StraceParseError::new(
+                        blame.span,
+                        "expected ', ' or ')' after function argument",
+                    )
                 })?;
             }
 
@@ -226,6 +236,47 @@ fn parse_value<'a, 'src>(
             needs_comma = true;
 
             fields.push(next_field);
+        }
+    } else if let Ok(mut rest) = input.strip_prefix("[") {
+        let mut items = vec![];
+        let mut is_first = true;
+        let mut needs_comma = None;
+        loop {
+            if let Ok(rest) = rest.strip_prefix("]") {
+                break Ok((Value::Array(items), rest));
+            }
+
+            if rest.value.is_empty() {
+                return Err(StraceParseError::new(rest.span, "unexpected end of array"));
+            }
+
+            if is_first {
+                is_first = false;
+            } else if let Some(true) = needs_comma {
+                rest = rest.strip_prefix(", ").map_err(|blame| {
+                    StraceParseError::new(blame.span, "expected ', ' or ']' after array item")
+                })?;
+            } else if let Some(false) = needs_comma {
+                rest = rest.strip_prefix(" ").map_err(|blame| {
+                    StraceParseError::new(blame.span, "expected ' ' after bitset element")
+                })?;
+            } else if let Ok(after_comma) = rest.strip_prefix(", ") {
+                needs_comma = Some(true);
+                rest = after_comma;
+            } else if let Ok(after_space) = rest.strip_prefix(" ") {
+                needs_comma = Some(false);
+                rest = after_space;
+            } else {
+                return Err(StraceParseError::new(
+                    rest.span,
+                    "expected ' ' or ', ' or ']' first array item",
+                ));
+            }
+
+            let next_item;
+            (next_item, rest) = parse_value(rest)?;
+
+            items.push(next_item);
         }
     } else if input.value.starts_with(|c| is_basic_expression_char(c)) {
         let end_basic_expr = input
@@ -458,6 +509,10 @@ mod tests {
         }
     }
 
+    fn array<'a>(items: impl IntoIterator<Item = Value<'a>>) -> Value<'a> {
+        Value::Array(items.into_iter().collect())
+    }
+
     fn unnamed(value: Value) -> Field {
         Field { name: None, value }
     }
@@ -609,6 +664,49 @@ mod tests {
                     ))
                 ]
             )
+        );
+    }
+
+    #[test]
+    fn test_parse_array() {
+        assert_eq!(parse_value("[]").unwrap(), array([]));
+        assert_eq!(parse_value("[1]").unwrap(), array([expr("1")]));
+        assert_eq!(
+            parse_value("[1, 2]").unwrap(),
+            array([expr("1"), expr("2")])
+        );
+        assert_eq!(
+            parse_value("[1, 2, BUCKLE_MY_SHOE]").unwrap(),
+            array([expr("1"), expr("2"), expr("BUCKLE_MY_SHOE")])
+        );
+        assert_eq!(
+            parse_value("[1, 2, [a, b, c], [d e f]]").unwrap(),
+            array([
+                expr("1"),
+                expr("2"),
+                array([expr("a"), expr("b"), expr("c")]),
+                array([expr("d"), expr("e"), expr("f")])
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_array_bitset() {
+        assert_eq!(parse_value("[]").unwrap(), array([]));
+        assert_eq!(parse_value("[1]").unwrap(), array([expr("1")]));
+        assert_eq!(parse_value("[1 2]").unwrap(), array([expr("1"), expr("2")]));
+        assert_eq!(
+            parse_value("[1 2 BUCKLE_MY_SHOE]").unwrap(),
+            array([expr("1"), expr("2"), expr("BUCKLE_MY_SHOE")])
+        );
+        assert_eq!(
+            parse_value("[1 2 [a b c] [d, e, f]]").unwrap(),
+            array([
+                expr("1"),
+                expr("2"),
+                array([expr("a"), expr("b"), expr("c")]),
+                array([expr("d"), expr("e"), expr("f")])
+            ])
         );
     }
 }
