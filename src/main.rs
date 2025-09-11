@@ -14,17 +14,14 @@ fn main() -> miette::Result<()> {
     for (line_index, line) in stdin.lines().enumerate() {
         let line = line.unwrap();
 
-        let strace = systrument::strace::parser::parse_line(
-            &line,
-            &systrument::strace::LineSourceLocation {
-                filename: "<stdin>",
-                line_index,
-            },
-        );
+        let strace = systrument::strace::parser::parse_line(&line);
         let strace = match strace {
             Ok(strace) => strace,
             Err(error) => {
-                let report = miette::Report::new(error);
+                let report = miette::Report::new(error).with_source_code(
+                    systrument::utils::OffsetSource::new_named("<stdin>", line)
+                        .with_line_offset(line_index),
+                );
                 println!("{report:?}");
                 continue;
             }

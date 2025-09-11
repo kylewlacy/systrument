@@ -1,15 +1,8 @@
 use systrument::strace::{Event, SyscallEvent};
 
-fn parse_strace_line(
-    line: &'_ str,
-) -> Result<systrument::strace::Line<'_>, systrument::strace::parser::ParseLineError> {
-    systrument::strace::parser::parse_line(
-        line,
-        &systrument::strace::LineSourceLocation {
-            filename: "<test>",
-            line_index: 0,
-        },
-    )
+fn parse_strace_line(line: &'_ str) -> miette::Result<systrument::strace::Line<'_>> {
+    systrument::strace::parser::parse_line(line)
+        .map_err(|err| miette::Report::new(err).with_source_code(line.to_string()))
 }
 
 fn syscall_event(event: Event) -> miette::Result<SyscallEvent> {

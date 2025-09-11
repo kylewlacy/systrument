@@ -126,9 +126,3 @@ struct Field<'a> {
     pub name: Option<&'a str>,
     pub value: Value<'a>,
 }
-
-#[derive(Debug)]
-pub struct LineSourceLocation<'a> {
-    pub filename: &'a str,
-    pub line_index: usize,
-}
