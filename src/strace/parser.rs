@@ -453,7 +453,7 @@ fn parse_value<'a>(input: Blame<&'a str>) -> Result<(Value<'a>, Blame<&'a str>),
 
     let mut operators_and_operands = vec![];
     loop {
-        let Ok((op, after_op)) = parse_binary_op(rest.trim_start()) else {
+        let Ok((op, after_op)) = parse_binary_op(rest) else {
             break;
         };
         rest = after_op;
@@ -468,6 +468,17 @@ fn parse_value<'a>(input: Blame<&'a str>) -> Result<(Value<'a>, Blame<&'a str>),
         value = Value::BinaryOperations {
             first: Box::new(value),
             operators_and_operands,
+        };
+    }
+
+    if let Ok(after_alternative) = rest.strip_prefix(" or ") {
+        rest = after_alternative.trim_start();
+
+        let right_value;
+        (right_value, rest) = parse_value(rest)?;
+        value = Value::Alternative {
+            left: Box::new(value),
+            right: Box::new(right_value),
         };
     }
 
@@ -857,6 +868,13 @@ mod tests {
         Value::Changed {
             from: Box::new(from),
             to: Box::new(to),
+        }
+    }
+
+    fn alternative<'a>(left: Value<'a>, right: Value<'a>) -> Value<'a> {
+        Value::Alternative {
+            left: Box::new(left),
+            right: Box::new(right),
         }
     }
 
@@ -1306,6 +1324,18 @@ mod tests {
                 "a",
                 changed(commented(expr("foo"), "abc"), commented(expr("bar"), "def"))
             )]),
+        );
+    }
+
+    #[test]
+    fn test_parse_alternative() {
+        assert_eq!(
+            parse_value("FOO or BAR").unwrap(),
+            alternative(expr("FOO"), expr("BAR")),
+        );
+        assert_eq!(
+            parse_value("FOO or BAR or BAZ").unwrap(),
+            alternative(expr("FOO"), alternative(expr("BAR"), expr("BAZ"))),
         );
     }
 }
