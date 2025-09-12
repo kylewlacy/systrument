@@ -60,6 +60,10 @@ enum Value<'a> {
         left: Box<Value<'a>>,
         right: Box<Value<'a>>,
     },
+    BinaryOperations {
+        first: Box<Value<'a>>,
+        operators_and_operands: Vec<(BinaryOperator, Value<'a>)>,
+    },
     Truncated,
 }
 
@@ -91,7 +95,7 @@ impl Value<'_> {
             Self::Commented { value, comment: _ } => value.to_bstring(),
             Self::Changed { from, to: _ } => from.to_bstring(),
             Self::Alternative { left, right: _ } => left.to_bstring(),
-            Self::Truncated => None,
+            Self::BinaryOperations { .. } | Self::Truncated => None,
         }
     }
 
@@ -110,6 +114,14 @@ impl Value<'_> {
             None
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinaryOperator {
+    And,
+    Or,
+    Equal,
+    NotEqual,
 }
 
 #[derive(Debug)]

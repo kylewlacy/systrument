@@ -4,7 +4,7 @@ use blame_on::{Blame, Span};
 use bstr::ByteVec as _;
 use chumsky::prelude::*;
 
-use crate::Pid;
+use crate::{Pid, strace::BinaryOperator};
 
 use super::{Event, Field, Fields, Line, SyscallEvent, Value};
 
@@ -451,6 +451,26 @@ fn parse_value<'a>(input: Blame<&'a str>) -> Result<(Value<'a>, Blame<&'a str>),
         }
     }
 
+    let mut operators_and_operands = vec![];
+    loop {
+        let Ok((op, after_op)) = parse_binary_op(rest.trim_start()) else {
+            break;
+        };
+        rest = after_op;
+
+        let next_value;
+        (next_value, rest) = parse_value_basic(rest)?;
+
+        operators_and_operands.push((op, next_value));
+    }
+
+    if !operators_and_operands.is_empty() {
+        value = Value::BinaryOperations {
+            first: Box::new(value),
+            operators_and_operands,
+        };
+    }
+
     if let Ok(after_comment_start) = rest.trim_start().strip_prefix("/*") {
         rest = after_comment_start;
 
@@ -594,6 +614,22 @@ fn is_basic_expression_char(c: char) -> bool {
     matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '+' | '-' | '*' | '.' | '/' | '^' | '&' | '|')
 }
 
+fn parse_binary_op<'a>(
+    input: Blame<&'a str>,
+) -> Result<(BinaryOperator, Blame<&'a str>), Blame<&'a str>> {
+    if let Ok(rest) = input.trim_start().strip_prefix("&&") {
+        Ok((BinaryOperator::And, rest.trim_start()))
+    } else if let Ok(rest) = input.trim_start().strip_prefix("||") {
+        Ok((BinaryOperator::Or, rest.trim_start()))
+    } else if let Ok(rest) = input.trim_start().strip_prefix("==") {
+        Ok((BinaryOperator::Equal, rest.trim_start()))
+    } else if let Ok(rest) = input.trim_start().strip_prefix("!=") {
+        Ok((BinaryOperator::NotEqual, rest.trim_start()))
+    } else {
+        Err(input)
+    }
+}
+
 // fn line_parser<'a>() -> impl chumsky::Parser<'a, &'a str, Line<'a>, ParserError<'a>> {
 //     let pid = text::int(10)
 //         .try_map(|pid: &str, span| pid.parse::<Pid>().map_err(|e| Rich::custom(span, e)));
@@ -723,7 +759,7 @@ impl miette::Diagnostic for StraceParseError {
 mod tests {
     use std::borrow::Cow;
 
-    use crate::strace::{Field, Value};
+    use crate::strace::{BinaryOperator, Field, Value};
 
     fn parse_value(s: &str) -> miette::Result<Value<'_>> {
         let (value, rest) = super::parse_value(s.into())
@@ -748,6 +784,16 @@ mod tests {
 
     fn expr(expr: &'_ str) -> Value<'_> {
         Value::Expression(expr)
+    }
+
+    fn binary_ops<'a>(
+        first: Value<'a>,
+        rest: impl IntoIterator<Item = (BinaryOperator, Value<'a>)>,
+    ) -> Value<'a> {
+        Value::BinaryOperations {
+            first: Box::new(first),
+            operators_and_operands: rest.into_iter().collect(),
+        }
     }
 
     fn fn_call<'a>(function: &'a str, args: impl IntoIterator<Item = Field<'a>>) -> Value<'a> {
@@ -910,6 +956,23 @@ mod tests {
         assert_eq!(
             parse_value("BLAH_BLAH_BLAH5").unwrap(),
             expr("BLAH_BLAH_BLAH5")
+        );
+    }
+
+    #[test]
+    fn test_parse_expr_with_operators() {
+        assert_eq!(
+            parse_value("[{WIFEXITED(s) && WEXITSTATUS(s) == 0}]").unwrap(),
+            array([struct_value([unnamed(binary_ops(
+                fn_call("WIFEXITED", [unnamed(expr("s"))]),
+                [
+                    (
+                        BinaryOperator::And,
+                        fn_call("WEXITSTATUS", [unnamed(expr("s"))])
+                    ),
+                    (BinaryOperator::Equal, expr("0"))
+                ]
+            ))])]),
         );
     }
 
