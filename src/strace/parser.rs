@@ -4,11 +4,14 @@ use blame_on::{Blame, Span};
 use bstr::ByteVec as _;
 use chumsky::prelude::*;
 
-use crate::{Pid, strace::BinaryOperator};
+use crate::{
+    Pid,
+    strace::{BinaryOperator, ExitedEvent},
+};
 
 use super::{Event, Field, Fields, Line, SyscallEvent, Value};
 
-pub fn parse_line<'line, 'loc>(line: &'line str) -> Result<Line<'line>, StraceParseError> {
+pub fn parse_line<'a>(line: &'a str) -> Result<Line<'a>, StraceParseError> {
     let input = Blame::new_str(line);
 
     let (pid, input) = input
@@ -37,12 +40,10 @@ pub fn parse_line<'line, 'loc>(line: &'line str) -> Result<Line<'line>, StracePa
             .empty()
             .map_err(|blame| StraceParseError::new(blame.span, "expected end of input"))?;
 
-        if let Ok(code) = event.strip_prefix("exited with ") {
-            Event::Exited { code: code.value }
-        } else if let Ok(signal) = event.strip_prefix("killed by ") {
-            Event::KilledBy {
-                signal: signal.value,
-            }
+        if let Ok(code_string) = event.strip_prefix("exited with ") {
+            Event::Exited(ExitedEvent { code_string })
+        } else if let Ok(signal_string) = event.strip_prefix("killed by ") {
+            Event::KilledBy { signal_string }
         } else {
             return Err(StraceParseError::new(
                 event.span,
@@ -95,6 +96,34 @@ pub fn parse_line<'line, 'loc>(line: &'line str) -> Result<Line<'line>, StracePa
         timestamp: timestamp.value,
         event,
     })
+}
+
+pub(crate) fn parse_args<'a>(mut input: Blame<&'a str>) -> Result<Fields<'a>, StraceParseError> {
+    let mut args = vec![];
+    let mut needs_comma = false;
+
+    loop {
+        input = input.trim_start();
+
+        if let Ok(_) = input.empty() {
+            break;
+        }
+
+        if needs_comma {
+            input = input
+                .strip_prefix(",")
+                .map_err(|blame| StraceParseError::new(blame.span, "expected ',' or end of args"))?
+                .trim_start();
+        }
+
+        needs_comma = true;
+
+        let field;
+        (field, input) = parse_field(input)?;
+        args.push(field);
+    }
+
+    Ok(Fields { values: args })
 }
 
 fn parse_duration(s: &str) -> Result<jiff::SignedDuration, ()> {
@@ -360,7 +389,9 @@ fn parse_value_basic<'a>(
     }
 }
 
-fn parse_value<'a>(input: Blame<&'a str>) -> Result<(Value<'a>, Blame<&'a str>), StraceParseError> {
+pub(crate) fn parse_value<'a>(
+    input: Blame<&'a str>,
+) -> Result<(Value<'a>, Blame<&'a str>), StraceParseError> {
     let (mut value, mut rest) = parse_value_basic(input)?;
     if let Ok(after_annotation_start) = rest.strip_prefix("<") {
         rest = after_annotation_start;
@@ -519,6 +550,18 @@ fn parse_value<'a>(input: Blame<&'a str>) -> Result<(Value<'a>, Blame<&'a str>),
     }
 
     Ok((value, rest))
+}
+
+pub(crate) fn parse_whole_value(s: Blame<&str>) -> Result<Value<'_>, StraceParseError> {
+    let (value, rest) = parse_value(s.into())?;
+    rest.empty().map_err(|blame| {
+        crate::strace::parser::StraceParseError::new(
+            blame.span,
+            "expected end of input after value",
+        )
+    })?;
+
+    Ok(value)
 }
 
 fn split_char<'a>(input: Blame<&'a str>) -> Result<(char, Blame<&'a str>), Blame<&'a str>> {
@@ -784,16 +827,8 @@ mod tests {
     use crate::strace::{BinaryOperator, Field, Value};
 
     fn parse_value(s: &str) -> miette::Result<Value<'_>> {
-        let (value, rest) = super::parse_value(s.into())
-            .map_err(|err| miette::Report::new(err).with_source_code(s.to_string()))?;
-        rest.empty().map_err(|blame| {
-            miette::Report::new(crate::strace::parser::StraceParseError::new(
-                blame.span,
-                "parse_value did not consume whole input",
-            ))
-        })?;
-
-        Ok(value)
+        super::parse_whole_value(s.into())
+            .map_err(|err| miette::Report::new(err).with_source_code(s.to_string()))
     }
 
     fn string(s: impl AsRef<[u8]>) -> Value<'static> {

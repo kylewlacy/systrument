@@ -55,10 +55,10 @@ fn test_strace_parse_line_basic() {
         strace.timestamp,
         jiff::Timestamp::constant(1757467412, 646253000),
     );
-    let Event::KilledBy { signal } = strace.event else {
+    let Event::KilledBy { signal_string } = strace.event else {
         panic!("expected killed-by event, got {:?}", strace.event);
     };
-    assert_eq!(signal, "SIGTERM");
+    assert_eq!(signal_string.value, "SIGTERM");
 
     let strace = parse_strace_line("37755 1757467412.646253 +++ killed by SIGTERM +++").unwrap();
     assert_eq!(strace.pid, 37755);
@@ -66,10 +66,10 @@ fn test_strace_parse_line_basic() {
         strace.timestamp,
         jiff::Timestamp::constant(1757467412, 646253000),
     );
-    let Event::KilledBy { signal } = strace.event else {
+    let Event::KilledBy { signal_string } = strace.event else {
         panic!("expected killed-by event, got {:?}", strace.event);
     };
-    assert_eq!(signal, "SIGTERM");
+    assert_eq!(signal_string.value, "SIGTERM");
 
     let strace = parse_strace_line("37755 1757467412.646087 --- SIGTERM {si_signo=SIGTERM, si_code=SI_USER, si_pid=37799, si_uid=1000} ---").unwrap();
     assert_eq!(strace.pid, 37755);

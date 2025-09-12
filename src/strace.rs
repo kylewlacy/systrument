@@ -18,8 +18,8 @@ pub struct Line<'a> {
 pub enum Event<'a> {
     Syscall(SyscallEvent<'a>),
     Signal { signal: &'a str },
-    Exited { code: &'a str },
-    KilledBy { signal: &'a str },
+    Exited(ExitedEvent<'a>),
+    KilledBy { signal_string: Blame<&'a str> },
 }
 
 #[derive(Debug)]
@@ -28,6 +28,45 @@ pub struct SyscallEvent<'a> {
     pub args_string: Blame<&'a str>,
     pub result_string: Blame<&'a str>,
     pub duration: std::time::Duration,
+}
+
+impl<'a> SyscallEvent<'a> {
+    fn args(&'a self) -> Result<Fields<'a>, parser::StraceParseError> {
+        let args = parser::parse_args(self.args_string)?;
+        Ok(args)
+    }
+
+    fn result(&'a self) -> Result<SyscallResult<'a>, parser::StraceParseError> {
+        let (value, message) = if let Ok(message) = self.result_string.strip_prefix("?") {
+            (None, message)
+        } else {
+            let (value, message) = parser::parse_value(self.result_string)?;
+            (Some(value), message)
+        };
+
+        let message = message.non_empty().ok().map(|message| message.trim().value);
+        Ok(SyscallResult {
+            returned: value,
+            message,
+        })
+    }
+}
+
+struct SyscallResult<'a> {
+    pub returned: Option<Value<'a>>,
+    pub message: Option<&'a str>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ExitedEvent<'a> {
+    pub code_string: Blame<&'a str>,
+}
+
+impl ExitedEvent<'_> {
+    pub fn code(&self) -> Result<Value<'_>, parser::StraceParseError> {
+        let code = parser::parse_whole_value(self.code_string)?;
+        Ok(code)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -129,8 +168,15 @@ struct LazyFields<'a> {
     string: Blame<&'a str>,
 }
 
-struct Fields<'a> {
+#[derive(Debug)]
+pub struct Fields<'a> {
     values: Vec<Field<'a>>,
+}
+
+impl Fields<'_> {
+    fn value_at_index(&self, index: usize) -> Option<&Value<'_>> {
+        self.values.get(index).map(|field| &field.value)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
