@@ -320,9 +320,12 @@ fn parse_value_basic<'a>(
             }
 
             if !is_first {
-                rest = rest.strip_prefix(",").map_err(|blame| {
-                    StraceParseError::new(blame.span, "expected ',' or '}' after struct field")
-                })?;
+                rest = rest
+                    .strip_prefix(",")
+                    .map_err(|blame| {
+                        StraceParseError::new(blame.span, "expected ',' or '}' after struct field")
+                    })?
+                    .trim_start();
             }
             is_first = false;
 
@@ -331,6 +334,8 @@ fn parse_value_basic<'a>(
 
             fields.push(next_field);
         }
+    } else if let Ok(rest) = input.strip_prefix("...") {
+        Ok((Value::Truncated, rest))
     } else if input.value.starts_with(|c| is_basic_expression_char(c)) {
         let end_basic_expr = input
             .value
@@ -953,6 +958,69 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_function_call_truncated() {
+        assert_eq!(
+            parse_value("foo(...)").unwrap(),
+            fn_call("foo", [unnamed(Value::Truncated)])
+        );
+        assert_eq!(
+            parse_value("foo(1, 2, 3, ...)").unwrap(),
+            fn_call(
+                "foo",
+                [
+                    unnamed(expr("1")),
+                    unnamed(expr("2")),
+                    unnamed(expr("3")),
+                    unnamed(Value::Truncated)
+                ]
+            )
+        );
+        assert_eq!(
+            parse_value("foo(param1 = 1, param2 = 2, ...)").unwrap(),
+            fn_call(
+                "foo",
+                [
+                    named("param1", expr("1")),
+                    named("param2", expr("2")),
+                    unnamed(Value::Truncated)
+                ]
+            )
+        );
+        assert_eq!(
+            parse_value(
+                "foo(fizz(...), buzz = buzz(a = 1, b = 2, ...), bar(baz, qux = qux(...), ...), ...)"
+            )
+            .unwrap(),
+            fn_call(
+                "foo",
+                [
+                    unnamed(fn_call("fizz", [unnamed(Value::Truncated)])),
+                    named(
+                        "buzz",
+                        fn_call(
+                            "buzz",
+                            [
+                                named("a", expr("1")),
+                                named("b", expr("2")),
+                                unnamed(Value::Truncated)
+                            ]
+                        )
+                    ),
+                    unnamed(fn_call(
+                        "bar",
+                        [
+                            unnamed(expr("baz")),
+                            named("qux", fn_call("qux", [unnamed(Value::Truncated)])),
+                            unnamed(Value::Truncated)
+                        ]
+                    )),
+                    unnamed(Value::Truncated)
+                ]
+            )
+        );
+    }
+
+    #[test]
     fn test_parse_array() {
         assert_eq!(parse_value("[]").unwrap(), array([]));
         assert_eq!(parse_value("[1]").unwrap(), array([expr("1")]));
@@ -971,6 +1039,30 @@ mod tests {
                 expr("2"),
                 array([expr("a"), expr("b"), expr("c")]),
                 array([expr("d"), expr("e"), expr("f")])
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_array_truncated() {
+        assert_eq!(parse_value("[...]").unwrap(), array([Value::Truncated]));
+        assert_eq!(parse_value("[1]").unwrap(), array([expr("1")]));
+        assert_eq!(
+            parse_value("[1, 2, ...]").unwrap(),
+            array([expr("1"), expr("2"), Value::Truncated])
+        );
+        assert_eq!(
+            parse_value("[1, 2, BUCKLE_MY_SHOE]").unwrap(),
+            array([expr("1"), expr("2"), expr("BUCKLE_MY_SHOE")])
+        );
+        assert_eq!(
+            parse_value("[1, 2, [a, b, c, ...], [d e f], ...]").unwrap(),
+            array([
+                expr("1"),
+                expr("2"),
+                array([expr("a"), expr("b"), expr("c"), Value::Truncated]),
+                array([expr("d"), expr("e"), expr("f")]),
+                Value::Truncated
             ])
         );
     }
@@ -1042,6 +1134,17 @@ mod tests {
                 named("inner", struct_value([unnamed(expr("AAAA"))]))
             ])
         );
+    }
+
+    #[test]
+    fn test_parse_struct_truncated() {
+        assert_eq!(
+            parse_value("{ifa_family=AF_UNSPEC, ...}").unwrap(),
+            struct_value([
+                named("ifa_family", expr("AF_UNSPEC")),
+                unnamed(Value::Truncated)
+            ])
+        )
     }
 
     #[test]
