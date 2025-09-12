@@ -17,21 +17,21 @@ pub struct EventEmitter {
 }
 
 impl EventEmitter {
-    pub fn push_line(&mut self, line: super::Line) {
+    pub fn push_line(
+        &mut self,
+        line: super::Line,
+    ) -> Result<(), crate::strace::parser::StraceParseError> {
         let timestamp = line.timestamp;
         let pid = line.pid;
 
         let process_state = self.alive_processes.entry(pid).or_default();
 
         match line.event {
-            super::Event::Syscall(super::SyscallEvent {
-                name,
-                args,
-                result,
-                duration: _,
-            }) => match name.as_str() {
+            super::Event::Syscall(event) => match event.name {
                 "fork" | "vfork" | "clone" | "clone3" => {
-                    let child_pid = result.value.and_then(|value| value.as_i32());
+                    let result = event.result()?;
+
+                    let child_pid = result.returned.and_then(|value| value.as_i32());
                     if let Some(child_pid) = child_pid {
                         self.alive_processes
                             .entry(child_pid)
@@ -42,6 +42,8 @@ impl EventEmitter {
                     }
                 }
                 "execve" => {
+                    let args = event.args()?;
+
                     let command = args
                         .value_at_index(0)
                         .and_then(super::Value::to_bstring)
@@ -94,6 +96,8 @@ impl EventEmitter {
                     });
                 }
                 "execveat" => {
+                    let args = event.args()?;
+
                     let dir = args
                         .value_at_index(0)
                         .and_then(super::Value::to_bstring)
@@ -164,7 +168,8 @@ impl EventEmitter {
                 _ => {}
             },
             super::Event::Signal { .. } => {}
-            super::Event::Exited { code } => {
+            super::Event::Exited(event) => {
+                let code = event.code()?;
                 let did_stop_process = self
                     .alive_processes
                     .remove(&pid)
@@ -179,26 +184,25 @@ impl EventEmitter {
                     });
                 }
             }
-            super::Event::KilledBy { signal } => {
+            super::Event::KilledBy { signal_string } => {
+                let signal = signal_string.split(" ").next().unwrap();
                 let did_stop_process = self
                     .alive_processes
                     .remove(&pid)
                     .is_some_and(|state| state.did_exec);
                 if did_stop_process {
-                    let signal = if let super::Value::Expression(signal) = signal {
-                        Some(signal)
-                    } else {
-                        None
-                    };
-
                     self.events.push_back(Event {
                         timestamp,
                         pid,
-                        kind: EventKind::StopProcess(StopProcessEvent::Killed { signal }),
+                        kind: EventKind::StopProcess(StopProcessEvent::Killed {
+                            signal: Some(signal.value.to_string()),
+                        }),
                     });
                 }
             }
         }
+
+        Ok(())
     }
 
     pub fn pop_event(&mut self) -> Option<Event> {

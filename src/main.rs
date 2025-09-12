@@ -1,7 +1,7 @@
 use std::io::BufRead as _;
 
 fn main() -> miette::Result<()> {
-    // let mut emitter = strace::emitter::EventEmitter::default();
+    let mut emitter = systrument::strace::emitter::EventEmitter::default();
     let output_path = std::env::args()
         .skip(1)
         .next()
@@ -29,13 +29,20 @@ fn main() -> miette::Result<()> {
 
         // println!("{strace:#?}");
 
-        // emitter.push_line(strace);
+        if let Err(error) = emitter.push_line(strace) {
+            let report = miette::Report::new(error).with_source_code(
+                systrument::utils::OffsetSource::new_named("<stdin>", line)
+                    .with_line_offset(line_index),
+            );
+            println!("{report:?}");
+            continue;
+        }
 
-        // while let Some(event) = emitter.pop_event() {
-        //     perfetto_writer
-        //         .output_event(event)
-        //         .expect("error writing perfetto event");
-        // }
+        while let Some(event) = emitter.pop_event() {
+            perfetto_writer
+                .output_event(event)
+                .expect("error writing perfetto event");
+        }
     }
 
     Ok(())

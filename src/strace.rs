@@ -4,7 +4,7 @@ use blame_on::Blame;
 
 use crate::Pid;
 
-// pub mod emitter;
+pub mod emitter;
 pub mod parser;
 
 #[derive(Debug)]
