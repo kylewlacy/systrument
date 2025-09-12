@@ -1,8 +1,7 @@
-use std::{borrow::Cow, collections::VecDeque};
+use std::borrow::Cow;
 
-use blame_on::{Blame, Span};
+use blame_on::Blame;
 use bstr::ByteVec as _;
-use chumsky::prelude::*;
 
 use crate::{
     Pid,
@@ -620,7 +619,7 @@ fn parse_string_escape_sequence<'a>(
                 .get(1..3)
                 .ok_or_else(|| StraceParseError::new(escape.span, "unexpected end of string"))?;
             let byte = u8::from_str_radix(hex, 16)
-                .map_err(|e| StraceParseError::new(escape.span, "invalid hex escape in string"))?;
+                .map_err(|_| StraceParseError::new(escape.span, "invalid hex escape in string"))?;
             (byte, 3)
         }
         b'0'..=b'7' => {
@@ -632,7 +631,7 @@ fn parse_string_escape_sequence<'a>(
                 .count();
             let octal_bytes = &escaped_bytes[0..num_octal_bytes];
             let octal = std::str::from_utf8(octal_bytes).unwrap();
-            let byte = u8::from_str_radix(octal, 8).map_err(|e| {
+            let byte = u8::from_str_radix(octal, 8).map_err(|_| {
                 StraceParseError::new(escape.span, "invalid octal escape in string")
             })?;
             (byte, num_octal_bytes)
@@ -668,7 +667,7 @@ fn parse_ident<'a>(
 }
 
 fn is_ident(value: &str) -> bool {
-    let Ok((ident, rest)) = parse_ident(Blame::new_str(value)) else {
+    let Ok((_, rest)) = parse_ident(Blame::new_str(value)) else {
         return false;
     };
 

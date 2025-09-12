@@ -54,6 +54,7 @@ impl<'a> SyscallEvent<'a> {
 
 struct SyscallResult<'a> {
     pub returned: Option<Value<'a>>,
+    #[expect(dead_code)]
     pub message: Option<&'a str>,
 }
 
@@ -70,7 +71,7 @@ impl ExitedEvent<'_> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Value<'a> {
+pub enum Value<'a> {
     String(Cow<'a, bstr::BStr>),
     TruncatedString(Cow<'a, bstr::BStr>),
     Expression(&'a str),
@@ -156,16 +157,11 @@ impl Value<'_> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BinaryOperator {
+pub enum BinaryOperator {
     And,
     Or,
     Equal,
     NotEqual,
-}
-
-#[derive(Debug)]
-struct LazyFields<'a> {
-    string: Blame<&'a str>,
 }
 
 #[derive(Debug)]
@@ -180,7 +176,7 @@ impl Fields<'_> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Field<'a> {
+pub struct Field<'a> {
     pub name: Option<&'a str>,
     pub value: Value<'a>,
 }
