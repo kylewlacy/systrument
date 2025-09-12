@@ -197,12 +197,15 @@ fn parse_value_basic<'a>(
     } else if let Ok(mut rest) = input.strip_prefix("[") {
         if let Ok(rest) = rest.trim_start().strip_prefix("[")
             && let Ok((first_index, rest)) = parse_value(rest)
-            && let Ok(mut rest) = rest.trim_start().strip_prefix("] = ")
+            && let Ok(mut rest) = rest
+                .trim_start()
+                .strip_prefix("]")
+                .and_then(|rest| rest.trim_start().strip_prefix("="))
         {
             // Sparse array (e.g. `[ [100] = some_value ]`)
 
             let first_item;
-            (first_item, rest) = parse_value(rest)?;
+            (first_item, rest) = parse_value(rest.trim_start())?;
 
             let mut items = vec![(first_index, first_item)];
             loop {
@@ -228,9 +231,17 @@ fn parse_value_basic<'a>(
                 let index;
                 (index, rest) = parse_value(rest.trim_start())?;
 
-                rest = rest.trim_start().strip_prefix("] = ").map_err(|blame| {
-                    StraceParseError::new(blame.span, "expected '] = ' after sparse array index")
-                })?;
+                rest = rest
+                    .trim_start()
+                    .strip_prefix("]")
+                    .and_then(|rest| rest.trim_start().strip_prefix("="))
+                    .map(|rest| rest.trim_start())
+                    .map_err(|blame| {
+                        StraceParseError::new(
+                            blame.span,
+                            "expected '] = ' after sparse array index",
+                        )
+                    })?;
 
                 let item;
                 (item, rest) = parse_value(rest)?;
@@ -1245,6 +1256,40 @@ mod tests {
                 (
                     expr("FIZZ|BUZZ"),
                     sparse_array([(expr("1"), array([expr("1")]))])
+                )
+            ])
+        );
+        assert_eq!(
+            parse_value("{c_iflag=ICRNL|IXON|IUTF8, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|OPOST|ONLCR, c_cflag=B38400|CS8|CREAD, c_lflag=ISIG|ICANON|ECHO|ECHOE|ECHOK|IEXTEN|ECHOCTL|ECHOKE, c_line=N_TTY, c_cc=[[VINTR]=0x3, [VQUIT]=0x1c, [VERASE]=0x7f, [VKILL]=0x15, [VEOF]=0x4, [VTIME]=0, [VMIN]=0x1, [VSWTC]=0, [VSTART]=0x11, [VSTOP]=0x13, [VSUSP]=0x1a, [VEOL]=0, [VREPRINT]=0x12, [VDISCARD]=0xf, [VWERASE]=0x17, [VLNEXT]=0x16, [VEOL2]=0, [17]=0, [18]=0]}").unwrap(),
+            struct_value([
+                named("c_iflag", expr("ICRNL|IXON|IUTF8")),
+                named("c_oflag", expr("NL0|CR0|TAB0|BS0|VT0|FF0|OPOST|ONLCR")),
+                named("c_cflag", expr("B38400|CS8|CREAD")),
+                named("c_lflag", expr("ISIG|ICANON|ECHO|ECHOE|ECHOK|IEXTEN|ECHOCTL|ECHOKE")),
+                named("c_line", expr("N_TTY")),
+                named(
+                    "c_cc",
+                    sparse_array([
+                        (expr("VINTR"), expr("0x3")),
+                        (expr("VQUIT"), expr("0x1c")),
+                        (expr("VERASE"), expr("0x7f")),
+                        (expr("VKILL"), expr("0x15")),
+                        (expr("VEOF"), expr("0x4")),
+                        (expr("VTIME"), expr("0")),
+                        (expr("VMIN"), expr("0x1")),
+                        (expr("VSWTC"), expr("0")),
+                        (expr("VSTART"), expr("0x11")),
+                        (expr("VSTOP"), expr("0x13")),
+                        (expr("VSUSP"), expr("0x1a")),
+                        (expr("VEOL"), expr("0")),
+                        (expr("VREPRINT"), expr("0x12")),
+                        (expr("VDISCARD"), expr("0xf")),
+                        (expr("VWERASE"), expr("0x17")),
+                        (expr("VLNEXT"), expr("0x16")),
+                        (expr("VEOL2"), expr("0")),
+                        (expr("17"), expr("0")),
+                        (expr("18"), expr("0")),
+                    ])
                 )
             ])
         );
