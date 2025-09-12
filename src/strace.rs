@@ -37,22 +37,12 @@ impl<'a> SyscallEvent<'a> {
     }
 
     fn result(&'a self) -> Result<SyscallResult<'a>, parser::StraceParseError> {
-        let (value, message) = if let Ok(message) = self.result_string.strip_prefix("?") {
-            (None, message)
-        } else {
-            let (value, message) = parser::parse_value(self.result_string)?;
-            (Some(value), message)
-        };
-
-        let message = message.non_empty().ok().map(|message| message.trim().value);
-        Ok(SyscallResult {
-            returned: value,
-            message,
-        })
+        let result = parser::parse_syscall_result(self.result_string)?;
+        Ok(result)
     }
 }
 
-struct SyscallResult<'a> {
+pub(crate) struct SyscallResult<'a> {
     pub returned: Option<Value<'a>>,
     #[expect(dead_code)]
     pub message: Option<&'a str>,

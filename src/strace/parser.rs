@@ -5,7 +5,7 @@ use bstr::ByteVec as _;
 
 use crate::{
     Pid,
-    strace::{BinaryOperator, ExitedEvent},
+    strace::{BinaryOperator, ExitedEvent, SyscallResult},
 };
 
 use super::{Event, Field, Fields, Line, SyscallEvent, Value};
@@ -123,6 +123,21 @@ pub(crate) fn parse_args<'a>(mut input: Blame<&'a str>) -> Result<Fields<'a>, St
     }
 
     Ok(Fields { values: args })
+}
+
+pub(crate) fn parse_syscall_result<'a>(
+    input: Blame<&'a str>,
+) -> Result<SyscallResult<'a>, StraceParseError> {
+    let (returned, rest) = if let Ok(rest) = input.strip_prefix("?") {
+        (None, rest)
+    } else {
+        let (value, rest) = parse_value(input)?;
+        (Some(value), rest)
+    };
+
+    let message = rest.trim().non_empty().ok().map(|blame| blame.value);
+
+    Ok(SyscallResult { returned, message })
 }
 
 fn parse_duration(s: &str) -> Result<jiff::SignedDuration, ()> {
