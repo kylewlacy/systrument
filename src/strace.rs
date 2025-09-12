@@ -25,8 +25,8 @@ pub enum Event<'a> {
 #[derive(Debug)]
 pub struct SyscallEvent<'a> {
     pub name: &'a str,
-    pub args: Blame<&'a str>,
-    pub result: &'a str,
+    pub args_string: Blame<&'a str>,
+    pub result_string: Blame<&'a str>,
     pub duration: std::time::Duration,
 }
 

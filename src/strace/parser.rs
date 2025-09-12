@@ -74,18 +74,18 @@ pub fn parse_line<'line, 'loc>(line: &'line str) -> Result<Line<'line>, StracePa
                 Result::<_, ()>::Ok(duration)
             })
             .map_err(|blame| StraceParseError::new(blame.span, "invalid duration"))?;
-        let (input, result) = input
+        let (input, result_string) = input
             .rsplit_once(" = ")
             .map_err(|blame| StraceParseError::new(blame.span, "failed to parse syscall result"))?;
-        let args = input
+        let args_string = input
             .trim_ascii_end()
             .strip_suffix(")")
             .map_err(|blame| StraceParseError::new(blame.span, "failed to parse syscall args"))?;
 
         Event::Syscall(SyscallEvent {
             name: syscall_name.value,
-            args,
-            result: result.value.trim(),
+            args_string,
+            result_string: result_string.trim(),
             duration: duration.value,
         })
     };
