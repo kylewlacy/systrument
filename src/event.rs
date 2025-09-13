@@ -6,6 +6,7 @@ use crate::Pid;
 pub struct Event {
     pub timestamp: jiff::Timestamp,
     pub pid: Pid,
+    pub log: String,
     pub kind: EventKind,
 }
 
@@ -13,6 +14,7 @@ pub struct Event {
 pub enum EventKind {
     StartProcess(StartProcessEvent),
     StopProcess(StopProcessEvent),
+    Log,
 }
 
 #[derive(Debug, Default)]

@@ -29,7 +29,7 @@ fn main() -> miette::Result<()> {
 
         // println!("{strace:#?}");
 
-        if let Err(error) = emitter.push_line(strace) {
+        if let Err(error) = emitter.push_line(strace, line.clone()) {
             let report = miette::Report::new(error).with_source_code(
                 systrument::utils::OffsetSource::new_named("<stdin>", line)
                     .with_line_offset(line_index),

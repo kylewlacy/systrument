@@ -20,6 +20,7 @@ impl EventEmitter {
     pub fn push_line(
         &mut self,
         line: super::Line,
+        log: String,
     ) -> Result<(), crate::strace::parser::StraceParseError> {
         let timestamp = line.timestamp;
         let pid = line.pid;
@@ -79,6 +80,7 @@ impl EventEmitter {
                         self.events.push_back(Event {
                             timestamp,
                             pid,
+                            log: log.clone(),
                             kind: EventKind::StopProcess(StopProcessEvent::ReExeced),
                         });
                     }
@@ -87,6 +89,7 @@ impl EventEmitter {
                     self.events.push_back(Event {
                         timestamp,
                         pid,
+                        log,
                         kind: EventKind::StartProcess(StartProcessEvent {
                             parent_pid: process_state.parent_pid,
                             command,
@@ -149,6 +152,7 @@ impl EventEmitter {
                         self.events.push_back(Event {
                             timestamp,
                             pid,
+                            log: log.clone(),
                             kind: EventKind::StopProcess(StopProcessEvent::ReExeced),
                         });
                     }
@@ -157,6 +161,7 @@ impl EventEmitter {
                     self.events.push_back(Event {
                         timestamp,
                         pid,
+                        log,
                         kind: EventKind::StartProcess(StartProcessEvent {
                             parent_pid: process_state.parent_pid,
                             command,
@@ -165,9 +170,23 @@ impl EventEmitter {
                         }),
                     });
                 }
-                _ => {}
+                _ => {
+                    self.events.push_back(Event {
+                        timestamp,
+                        pid,
+                        log,
+                        kind: EventKind::Log,
+                    });
+                }
             },
-            super::Event::Signal { .. } => {}
+            super::Event::Signal { .. } => {
+                self.events.push_back(Event {
+                    timestamp,
+                    pid,
+                    log,
+                    kind: EventKind::Log,
+                });
+            }
             super::Event::Exited(event) => {
                 let code = event.code()?;
                 let did_stop_process = self
@@ -178,9 +197,17 @@ impl EventEmitter {
                     self.events.push_back(Event {
                         timestamp,
                         pid,
+                        log,
                         kind: EventKind::StopProcess(StopProcessEvent::Exited {
                             code: code.as_i32(),
                         }),
+                    });
+                } else {
+                    self.events.push_back(Event {
+                        timestamp,
+                        pid,
+                        log,
+                        kind: EventKind::Log,
                     });
                 }
             }
@@ -194,9 +221,17 @@ impl EventEmitter {
                     self.events.push_back(Event {
                         timestamp,
                         pid,
+                        log,
                         kind: EventKind::StopProcess(StopProcessEvent::Killed {
                             signal: Some(signal.value.to_string()),
                         }),
+                    });
+                } else {
+                    self.events.push_back(Event {
+                        timestamp,
+                        pid,
+                        log,
+                        kind: EventKind::Log,
                     });
                 }
             }
