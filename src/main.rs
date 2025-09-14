@@ -38,6 +38,9 @@ struct StraceToOtelArgs {
 
     #[arg(short, long)]
     logs: bool,
+
+    #[arg(long)]
+    relative_to_now: bool,
 }
 
 fn main() -> miette::Result<()> {
@@ -137,6 +140,7 @@ fn strace_to_otel(args: StraceToOtelArgs) -> miette::Result<()> {
         .open()
         .into_diagnostic()
         .wrap_err_with(|| format!("failed to open input path {}", args.input))?;
+
     let mut otel_writer = systrument::otel::OtelOutput::new(
         otel_tracer,
         systrument::otel::OtelOutputOptions {

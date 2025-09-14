@@ -22,6 +22,8 @@ where
     trace_id: opentelemetry::TraceId,
     root_span: std::cell::OnceCell<opentelemetry_sdk::trace::Span>,
     process_spans: HashMap<crate::Pid, opentelemetry_sdk::trace::Span>,
+    first_event_timestamp: Option<jiff::Timestamp>,
+    last_event_timestamp: Option<jiff::Timestamp>,
 }
 
 impl<T> OtelOutput<T>
@@ -39,10 +41,15 @@ where
             process_spans: HashMap::new(),
             root_span: OnceCell::new(),
             trace_id,
+            first_event_timestamp: None,
+            last_event_timestamp: None,
         }
     }
 
     pub fn output_event(&mut self, event: Event) -> Result<(), Box<dyn std::error::Error>> {
+        self.first_event_timestamp = Some(self.first_event_timestamp.unwrap_or(event.timestamp));
+        self.last_event_timestamp = Some(event.timestamp);
+
         let root_span = self.root_span.get_or_init(|| {
             let mut cx = opentelemetry::Context::new();
             if let Some(parent_span_id) = self.options.parent_span_id {
@@ -88,5 +95,20 @@ where
         };
 
         Ok(())
+    }
+}
+
+impl<T> Drop for OtelOutput<T>
+where
+    T: opentelemetry::trace::Tracer<Span = opentelemetry_sdk::trace::Span>,
+{
+    fn drop(&mut self) {
+        if let Some(mut root_span) = self.root_span.take() {
+            if let Some(last_event_timestamp) = self.last_event_timestamp {
+                root_span.end_with_timestamp(last_event_timestamp.into());
+            } else {
+                root_span.end();
+            }
+        }
     }
 }
