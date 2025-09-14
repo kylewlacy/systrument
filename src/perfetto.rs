@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
+use bstr::ByteVec as _;
 use perfetto_protos::{
+    debug_annotation::{DebugAnnotation, debug_annotation},
     interned_data::InternedData,
     log_message::{LogMessage, LogMessageBody},
     process_descriptor::ProcessDescriptor,
@@ -123,6 +125,56 @@ impl<W: std::io::Write> PerfettoOutput<W> {
 
         match event.kind {
             crate::event::EventKind::StartProcess(start_process) => {
+                let command_name = start_process
+                    .command_name()
+                    .map(|command_name| command_name.to_owned());
+                let debug_annotations = start_process
+                    .command
+                    .into_iter()
+                    .map(|command| DebugAnnotation {
+                        name_field: Some(debug_annotation::Name_field::Name("command".to_string())),
+                        value: Some(debug_annotation::Value::StringValue(
+                            Vec::from(command).into_string_lossy(),
+                        )),
+                        ..Default::default()
+                    })
+                    .chain(start_process.args.into_iter().map(|args| {
+                        DebugAnnotation {
+                            name_field: Some(debug_annotation::Name_field::Name(
+                                "args".to_string(),
+                            )),
+                            array_values: args
+                                .into_iter()
+                                .map(|arg| DebugAnnotation {
+                                    value: Some(debug_annotation::Value::StringValue(
+                                        Vec::from(arg).into_string_lossy(),
+                                    )),
+                                    ..Default::default()
+                                })
+                                .collect(),
+                            ..Default::default()
+                        }
+                    }))
+                    .chain(start_process.env.into_iter().map(|env| {
+                        DebugAnnotation {
+                            name_field: Some(debug_annotation::Name_field::Name("env".to_string())),
+                            dict_entries: env
+                                .into_iter()
+                                .map(|(name, value)| DebugAnnotation {
+                                    name_field: Some(debug_annotation::Name_field::Name(
+                                        Vec::from(name).into_string_lossy(),
+                                    )),
+                                    value: Some(debug_annotation::Value::StringValue(
+                                        Vec::from(value).into_string_lossy(),
+                                    )),
+                                    ..Default::default()
+                                })
+                                .collect(),
+                            ..Default::default()
+                        }
+                    }))
+                    .collect();
+
                 self.packets.extend([
                     TracePacket {
                         timestamp: Some(timestamp),
@@ -148,9 +200,9 @@ impl<W: std::io::Write> PerfettoOutput<W> {
                         data: Some(trace_packet::Data::TrackEvent(TrackEvent {
                             track_uuid: Some(track_uuid),
                             type_: Some(EnumOrUnknown::new(track_event::Type::TYPE_SLICE_BEGIN)),
-                            name_field: start_process
-                                .command_name()
+                            name_field: command_name
                                 .map(|name| track_event::Name_field::Name(name.to_string())),
+                            debug_annotations,
                             ..Default::default()
                         })),
                         ..Default::default()
