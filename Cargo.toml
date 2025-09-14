@@ -13,6 +13,9 @@ clio = { version = "0.3.5", features = ["clap-parse"] }
 jiff = "0.2.15"
 libc = "0.2.175"
 miette = { version = "7.6.0", features = ["fancy"] }
+opentelemetry = { version = "0.30.0", default-features = false, features = ["trace", "logs"] }
+opentelemetry-otlp = { version = "0.30.0", default-features = false, features = ["trace", "logs", "http-proto", "reqwest-blocking-client", "reqwest-rustls"] }
+opentelemetry_sdk = { version = "0.30.0", default-features = false, features = ["trace", "logs"] }
 patharg = "0.4.1"
 perfetto_protos = "0.51.1"
 protobuf = "3.7.2"
