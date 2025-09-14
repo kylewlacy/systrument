@@ -21,6 +21,8 @@ pub struct PerfettoOutput<W: std::io::Write> {
     trusted_packet_sequence_id: trace_packet::Optional_trusted_packet_sequence_id,
     track_uuids_by_pid: HashMap<Pid, u64>,
     log_body_iid: u64,
+    packets: Vec<TracePacket>,
+    root_track_uuid: u64,
 }
 
 impl<W: std::io::Write> PerfettoOutput<W> {
@@ -29,12 +31,36 @@ impl<W: std::io::Write> PerfettoOutput<W> {
             trace_packet::Optional_trusted_packet_sequence_id::TrustedPacketSequenceId(
                 rand::random(),
             );
+        let root_track_uuid = rand::random();
+        let root_track_packet = TracePacket {
+            optional_trusted_packet_sequence_id: Some(trusted_packet_sequence_id.clone()),
+            sequence_flags: Some(1),
+            data: Some(trace_packet::Data::TrackDescriptor(TrackDescriptor {
+                uuid: Some(root_track_uuid),
+                static_or_dynamic_name: Some(track_descriptor::Static_or_dynamic_name::Name(
+                    "Root".into(),
+                )),
+                process: MessageField::some(ProcessDescriptor {
+                    pid: Some(0),
+                    ..Default::default()
+                }),
+                thread: MessageField::some(ThreadDescriptor {
+                    pid: Some(0),
+                    tid: Some(0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
 
         Self {
             writer,
-            trusted_packet_sequence_id,
+            trusted_packet_sequence_id: trusted_packet_sequence_id,
             track_uuids_by_pid: HashMap::new(),
             log_body_iid: 1,
+            packets: vec![root_track_packet],
+            root_track_uuid,
         }
     }
 
@@ -65,7 +91,7 @@ impl<W: std::io::Write> PerfettoOutput<W> {
                 ..Default::default()
             }),
             data: Some(trace_packet::Data::TrackEvent(TrackEvent {
-                track_uuid: Some(track_uuid),
+                track_uuid: Some(self.root_track_uuid),
                 name_field: Some(track_event::Name_field::Name("Log".into())),
                 type_: Some(EnumOrUnknown::new(track_event::Type::TYPE_INSTANT)),
                 log_message: MessageField::some(LogMessage {
@@ -77,9 +103,9 @@ impl<W: std::io::Write> PerfettoOutput<W> {
             ..Default::default()
         };
 
-        let packets = match event.kind {
+        match event.kind {
             crate::event::EventKind::StartProcess(start_process) => {
-                vec![
+                self.packets.extend([
                     TracePacket {
                         timestamp: Some(timestamp),
                         optional_trusted_packet_sequence_id: Some(
@@ -88,18 +114,10 @@ impl<W: std::io::Write> PerfettoOutput<W> {
                         sequence_flags: Some(1),
                         data: Some(trace_packet::Data::TrackDescriptor(TrackDescriptor {
                             uuid: Some(track_uuid),
+                            parent_uuid: Some(self.root_track_uuid),
                             static_or_dynamic_name: Some(
                                 track_descriptor::Static_or_dynamic_name::Name(TRACK_NAME.into()),
                             ),
-                            process: MessageField::some(ProcessDescriptor {
-                                pid: Some(event.pid),
-                                ..Default::default()
-                            }),
-                            thread: MessageField::some(ThreadDescriptor {
-                                pid: Some(event.pid),
-                                tid: Some(event.pid),
-                                ..Default::default()
-                            }),
                             ..Default::default()
                         })),
                         ..Default::default()
@@ -120,11 +138,11 @@ impl<W: std::io::Write> PerfettoOutput<W> {
                         ..Default::default()
                     },
                     log_packet,
-                ]
+                ]);
             }
             crate::event::EventKind::StopProcess(_) => {
                 self.track_uuids_by_pid.remove(&pid);
-                vec![
+                self.packets.extend([
                     log_packet,
                     TracePacket {
                         timestamp: Some(timestamp),
@@ -138,15 +156,15 @@ impl<W: std::io::Write> PerfettoOutput<W> {
                         })),
                         ..Default::default()
                     },
-                ]
+                ]);
             }
             crate::event::EventKind::Log => {
-                vec![log_packet]
+                self.packets.push(log_packet);
             }
         };
 
         let perfetto_message = Trace {
-            packet: packets,
+            packet: std::mem::take(&mut self.packets),
             ..Default::default()
         };
         perfetto_message.write_to_writer(&mut self.writer)?;
