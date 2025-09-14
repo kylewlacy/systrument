@@ -8,9 +8,12 @@ ariadne = { version = "0.5.1", features = ["auto-color"] }
 blame-on = { git = "https://github.com/kylewlacy/blame-on.git", features = ["miette"] }
 bstr = "1.12.0"
 chumsky = "1.0.0-alpha.8"
+clap = { version = "4.5.47", features = ["derive"] }
+clio = { version = "0.3.5", features = ["clap-parse"] }
 jiff = "0.2.15"
 libc = "0.2.175"
 miette = { version = "7.6.0", features = ["fancy"] }
+patharg = "0.4.1"
 perfetto_protos = "0.51.1"
 protobuf = "3.7.2"
 rand = "0.9.2"
