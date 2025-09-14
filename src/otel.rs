@@ -11,6 +11,7 @@ const ROOT_SPAN_NAME: &str = "processes";
 pub struct OtelOutputOptions {
     pub trace_id: Option<opentelemetry::TraceId>,
     pub parent_span_id: Option<opentelemetry::SpanId>,
+    pub relative_to: Option<jiff::Timestamp>,
 }
 
 pub struct OtelOutput<T>
@@ -50,6 +51,8 @@ where
         self.first_event_timestamp = Some(self.first_event_timestamp.unwrap_or(event.timestamp));
         self.last_event_timestamp = Some(event.timestamp);
 
+        let adjusted_timestamp = self.adjust_timestamp(event.timestamp);
+
         let root_span = self.root_span.get_or_init(|| {
             let mut cx = opentelemetry::Context::new();
             if let Some(parent_span_id) = self.options.parent_span_id {
@@ -63,7 +66,7 @@ where
             }
             self.tracer
                 .span_builder(ROOT_SPAN_NAME)
-                .with_start_time(event.timestamp)
+                .with_start_time(adjusted_timestamp)
                 .start_with_context(&self.tracer, &cx)
         });
 
@@ -82,19 +85,32 @@ where
                 let span = self
                     .tracer
                     .span_builder(command_name)
-                    .with_start_time(event.timestamp)
+                    .with_start_time(adjusted_timestamp)
                     .start_with_context(&self.tracer, &cx);
                 self.process_spans.insert(event.pid, span);
             }
             crate::event::EventKind::StopProcess(_) => {
                 if let Some(mut span) = self.process_spans.remove(&event.pid) {
-                    span.end_with_timestamp(event.timestamp.into());
+                    span.end_with_timestamp(adjusted_timestamp.into());
                 }
             }
             crate::event::EventKind::Log => {}
         };
 
         Ok(())
+    }
+
+    fn adjust_timestamp(&self, event_timestamp: jiff::Timestamp) -> jiff::Timestamp {
+        let Some(relative_to) = self.options.relative_to else {
+            return event_timestamp;
+        };
+
+        let Some(first_event_timestamp) = self.first_event_timestamp else {
+            return event_timestamp;
+        };
+
+        let duration = event_timestamp - first_event_timestamp;
+        relative_to + duration
     }
 }
 
@@ -105,7 +121,8 @@ where
     fn drop(&mut self) {
         if let Some(mut root_span) = self.root_span.take() {
             if let Some(last_event_timestamp) = self.last_event_timestamp {
-                root_span.end_with_timestamp(last_event_timestamp.into());
+                let adjusted_timestamp = self.adjust_timestamp(last_event_timestamp);
+                root_span.end_with_timestamp(adjusted_timestamp.into());
             } else {
                 root_span.end();
             }

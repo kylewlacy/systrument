@@ -141,11 +141,17 @@ fn strace_to_otel(args: StraceToOtelArgs) -> miette::Result<()> {
         .into_diagnostic()
         .wrap_err_with(|| format!("failed to open input path {}", args.input))?;
 
+    let relative_to = if args.relative_to_now {
+        Some(jiff::Timestamp::now())
+    } else {
+        None
+    };
     let mut otel_writer = systrument::otel::OtelOutput::new(
         otel_tracer,
         systrument::otel::OtelOutputOptions {
             trace_id: None,
             parent_span_id: None,
+            relative_to,
         },
     );
 
