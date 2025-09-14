@@ -22,6 +22,9 @@ struct StraceToPerfettoArgs {
 
     #[arg(short, long)]
     output: patharg::OutputArg,
+
+    #[arg(short, long)]
+    logs: bool,
 }
 
 fn main() -> miette::Result<()> {
@@ -49,7 +52,10 @@ fn strace_to_perfetto(args: StraceToPerfettoArgs) -> miette::Result<()> {
         .create()
         .into_diagnostic()
         .wrap_err_with(|| format!("failed to open output path {}", args.input))?;
-    let mut perfetto_writer = systrument::perfetto::PerfettoOutput::new(output);
+    let mut perfetto_writer = systrument::perfetto::PerfettoOutput::new(
+        output,
+        systrument::perfetto::PerfettoOutputOptions { logs: args.logs },
+    );
 
     let input_name = if args.input.is_stdin() {
         "<stdin>".to_string()
