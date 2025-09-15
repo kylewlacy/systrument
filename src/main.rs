@@ -193,5 +193,12 @@ fn strace_to_otel(args: StraceToOtelArgs) -> miette::Result<()> {
         }
     }
 
+    drop(otel_writer);
+
+    otel_trace_provider
+        .shutdown()
+        .into_diagnostic()
+        .wrap_err("failed to shutdown OTel trace provider")?;
+
     Ok(())
 }
