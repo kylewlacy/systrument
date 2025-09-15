@@ -82,10 +82,40 @@ where
                     .unwrap_or(root_span);
                 let cx = opentelemetry::Context::new()
                     .with_remote_span_context(parent_span.span_context().clone());
+                let attributes =
+                    std::iter::once(opentelemetry::KeyValue::new("pid", event.pid.to_string()))
+                        .chain(
+                            start_process
+                                .command_name()
+                                .into_iter()
+                                .map(|command_name| {
+                                    opentelemetry::KeyValue::new(
+                                        "command_name",
+                                        command_name.to_str_lossy().into_owned(),
+                                    )
+                                }),
+                        )
+                        .chain(start_process.command.iter().map(|command| {
+                            opentelemetry::KeyValue::new(
+                                "command",
+                                command.to_str_lossy().into_owned(),
+                            )
+                        }))
+                        .chain(start_process.args.iter().map(|args| {
+                            opentelemetry::KeyValue::new(
+                                "args",
+                                opentelemetry::Value::Array(opentelemetry::Array::String(
+                                    args.iter()
+                                        .map(|arg| arg.to_str_lossy().into_owned().into())
+                                        .collect(),
+                                )),
+                            )
+                        }));
                 let span = self
                     .tracer
                     .span_builder(command_name)
                     .with_start_time(adjusted_timestamp)
+                    .with_attributes(attributes)
                     .start_with_context(&self.tracer, &cx);
                 self.process_spans.insert(event.pid, span);
             }
