@@ -119,8 +119,30 @@ where
                     .start_with_context(&self.tracer, &cx);
                 self.process_spans.insert(event.pid, span);
             }
-            crate::event::EventKind::StopProcess(_) => {
+            crate::event::EventKind::StopProcess(stopped) => {
                 if let Some(mut span) = self.process_spans.remove(&event.pid) {
+                    match stopped {
+                        crate::event::StopProcessEvent::Exited { code } => {
+                            if let Some(code) = code {
+                                span.set_attributes([
+                                    opentelemetry::KeyValue::new("exit_code", i64::from(code)),
+                                    opentelemetry::KeyValue::new("exit_ok", code == 0),
+                                ]);
+                            }
+                        }
+                        crate::event::StopProcessEvent::Killed { signal } => {
+                            span.set_attributes(
+                                std::iter::once(opentelemetry::KeyValue::new("exit_ok", false))
+                                    .chain(signal.map(|signal| {
+                                        opentelemetry::KeyValue::new("exit_signal", signal)
+                                    })),
+                            );
+                        }
+                        crate::event::StopProcessEvent::ReExeced => {
+                            span.set_attribute(opentelemetry::KeyValue::new("re_exec", true));
+                        }
+                    }
+
                     span.end_with_timestamp(adjusted_timestamp.into());
                 }
             }
