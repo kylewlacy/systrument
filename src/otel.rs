@@ -77,8 +77,8 @@ where
                     |command_name| command_name.to_str_lossy().into_owned(),
                 );
                 let parent_span = start_process
-                    .parent_pid
-                    .and_then(|parent_pid| self.process_spans.get(&parent_pid))
+                    .owner_pid
+                    .and_then(|owner_pid| self.process_spans.get(&owner_pid))
                     .unwrap_or(root_span);
                 let cx = opentelemetry::Context::new()
                     .with_remote_span_context(parent_span.span_context().clone());

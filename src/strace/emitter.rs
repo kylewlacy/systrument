@@ -13,7 +13,7 @@ use crate::{
 
 #[derive(Default)]
 pub struct EventEmitter {
-    alive_processes: HashMap<Pid, ProcessState>,
+    processes: HashMap<Pid, ProcessState>,
     events: VecDeque<Event>,
 }
 
@@ -167,11 +167,14 @@ impl EventEmitter {
 
     fn handle_fork(&mut self, ctx: EventContext, child_pid: Option<i32>) {
         if let Some(child_pid) = child_pid {
-            self.alive_processes
+            let owner_pid = self.find_owner_pid(ctx.pid);
+
+            self.processes
                 .entry(child_pid)
                 .or_insert_with(|| ProcessState {
                     parent_pid: Some(ctx.pid),
-                    ..Default::default()
+                    owner_pid,
+                    status: ProcessStatus::Forked,
                 });
         }
 
@@ -179,9 +182,16 @@ impl EventEmitter {
     }
 
     fn handle_exec(&mut self, ctx: EventContext, exec: ProcessExec) {
-        let process_state = self.alive_processes.entry(ctx.pid).or_default();
+        let process_state = self
+            .processes
+            .entry(ctx.pid)
+            .or_insert_with(|| ProcessState {
+                parent_pid: None,
+                owner_pid: None,
+                status: ProcessStatus::Forked,
+            });
 
-        if process_state.did_exec {
+        if matches!(process_state.status, ProcessStatus::Execed) {
             self.events.push_back(Event {
                 timestamp: ctx.timestamp,
                 pid: ctx.pid,
@@ -189,7 +199,7 @@ impl EventEmitter {
                 kind: EventKind::StopProcess(StopProcessEvent::ReExeced),
             });
         }
-        process_state.did_exec = true;
+        process_state.status = ProcessStatus::Execed;
 
         self.events.push_back(Event {
             timestamp: ctx.timestamp,
@@ -197,6 +207,7 @@ impl EventEmitter {
             log: ctx.log,
             kind: EventKind::StartProcess(StartProcessEvent {
                 parent_pid: process_state.parent_pid,
+                owner_pid: process_state.owner_pid,
                 command: exec.command,
                 args: exec.args,
                 env: exec.env,
@@ -205,11 +216,18 @@ impl EventEmitter {
     }
 
     fn handle_stopped(&mut self, ctx: EventContext, stopped: StopProcessEvent) {
-        let did_stop_process = self
-            .alive_processes
-            .remove(&ctx.pid)
-            .is_some_and(|state| state.did_exec);
-        if did_stop_process {
+        let process_state = self
+            .processes
+            .entry(ctx.pid)
+            .or_insert_with(|| ProcessState {
+                parent_pid: None,
+                owner_pid: None,
+                status: ProcessStatus::Stopped,
+            });
+        let did_exec = matches!(process_state.status, ProcessStatus::Execed);
+        process_state.status = ProcessStatus::Stopped;
+
+        if did_exec {
             self.events.push_back(Event {
                 timestamp: ctx.timestamp,
                 pid: ctx.pid,
@@ -218,6 +236,23 @@ impl EventEmitter {
             });
         } else {
             self.handle_log(ctx);
+        }
+    }
+
+    fn find_owner_pid(&self, mut pid: Pid) -> Option<Pid> {
+        loop {
+            let Some(process_state) = self.processes.get(&pid) else {
+                break None;
+            };
+
+            if matches!(process_state.status, ProcessStatus::Execed) {
+                break Some(pid);
+            }
+
+            let Some(parent_pid) = process_state.parent_pid else {
+                break None;
+            };
+            pid = parent_pid;
         }
     }
 
@@ -231,10 +266,16 @@ impl EventEmitter {
     }
 }
 
-#[derive(Default)]
 struct ProcessState {
     parent_pid: Option<Pid>,
-    did_exec: bool,
+    owner_pid: Option<Pid>,
+    status: ProcessStatus,
+}
+
+enum ProcessStatus {
+    Forked,
+    Execed,
+    Stopped,
 }
 
 struct EventContext {
