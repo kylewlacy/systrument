@@ -174,6 +174,8 @@ impl EventEmitter {
                     ..Default::default()
                 });
         }
+
+        self.handle_log(ctx);
     }
 
     fn handle_exec(&mut self, ctx: EventContext, exec: ProcessExec) {
