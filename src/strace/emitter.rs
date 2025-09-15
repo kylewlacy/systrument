@@ -8,6 +8,7 @@ use bstr::ByteSlice;
 use crate::{
     Pid,
     event::{Event, EventKind, StartProcessEvent, StopProcessEvent},
+    strace::parser::StraceParseError,
 };
 
 #[derive(Default)]
@@ -17,15 +18,12 @@ pub struct EventEmitter {
 }
 
 impl EventEmitter {
-    pub fn push_line(
-        &mut self,
-        line: super::Line,
-        log: String,
-    ) -> Result<(), crate::strace::parser::StraceParseError> {
-        let timestamp = line.timestamp;
-        let pid = line.pid;
-
-        let process_state = self.alive_processes.entry(pid).or_default();
+    pub fn push_line(&mut self, line: super::Line, log: String) -> Result<(), StraceParseError> {
+        let ctx = EventContext {
+            log,
+            pid: line.pid,
+            timestamp: line.timestamp,
+        };
 
         match line.event {
             super::Event::Syscall(event) => match event.name {
@@ -33,14 +31,7 @@ impl EventEmitter {
                     let result = event.result()?;
 
                     let child_pid = result.returned.and_then(|value| value.as_i32());
-                    if let Some(child_pid) = child_pid {
-                        self.alive_processes
-                            .entry(child_pid)
-                            .or_insert_with(|| ProcessState {
-                                parent_pid: Some(pid),
-                                ..Default::default()
-                            });
-                    }
+                    self.handle_fork(ctx, child_pid);
                 }
                 "execve" => {
                     let args = event.args()?;
@@ -76,27 +67,14 @@ impl EventEmitter {
                                 .collect()
                         });
 
-                    if process_state.did_exec {
-                        self.events.push_back(Event {
-                            timestamp,
-                            pid,
-                            log: log.clone(),
-                            kind: EventKind::StopProcess(StopProcessEvent::ReExeced),
-                        });
-                    }
-                    process_state.did_exec = true;
-
-                    self.events.push_back(Event {
-                        timestamp,
-                        pid,
-                        log,
-                        kind: EventKind::StartProcess(StartProcessEvent {
-                            parent_pid: process_state.parent_pid,
+                    self.handle_exec(
+                        ctx,
+                        ProcessExec {
                             command,
                             args: exec_args,
                             env,
-                        }),
-                    });
+                        },
+                    );
                 }
                 "execveat" => {
                     let args = event.args()?;
@@ -148,92 +126,35 @@ impl EventEmitter {
                                 .collect()
                         });
 
-                    if process_state.did_exec {
-                        self.events.push_back(Event {
-                            timestamp,
-                            pid,
-                            log: log.clone(),
-                            kind: EventKind::StopProcess(StopProcessEvent::ReExeced),
-                        });
-                    }
-                    process_state.did_exec = true;
-
-                    self.events.push_back(Event {
-                        timestamp,
-                        pid,
-                        log,
-                        kind: EventKind::StartProcess(StartProcessEvent {
-                            parent_pid: process_state.parent_pid,
+                    self.handle_exec(
+                        ctx,
+                        ProcessExec {
                             command,
                             args: exec_args,
                             env,
-                        }),
-                    });
+                        },
+                    );
                 }
                 _ => {
-                    self.events.push_back(Event {
-                        timestamp,
-                        pid,
-                        log,
-                        kind: EventKind::Log,
-                    });
+                    self.handle_log(ctx);
                 }
             },
             super::Event::Signal { .. } => {
-                self.events.push_back(Event {
-                    timestamp,
-                    pid,
-                    log,
-                    kind: EventKind::Log,
-                });
+                self.handle_log(ctx);
             }
             super::Event::Exited(event) => {
                 let code = event.code()?;
-                let did_stop_process = self
-                    .alive_processes
-                    .remove(&pid)
-                    .is_some_and(|state| state.did_exec);
-                if did_stop_process {
-                    self.events.push_back(Event {
-                        timestamp,
-                        pid,
-                        log,
-                        kind: EventKind::StopProcess(StopProcessEvent::Exited {
-                            code: code.as_i32(),
-                        }),
-                    });
-                } else {
-                    self.events.push_back(Event {
-                        timestamp,
-                        pid,
-                        log,
-                        kind: EventKind::Log,
-                    });
-                }
+                let stopped = StopProcessEvent::Exited {
+                    code: code.as_i32(),
+                };
+                self.handle_stopped(ctx, stopped);
             }
             super::Event::KilledBy { signal_string } => {
                 let signal = signal_string.split(" ").next().unwrap();
-                let did_stop_process = self
-                    .alive_processes
-                    .remove(&pid)
-                    .is_some_and(|state| state.did_exec);
-                if did_stop_process {
-                    self.events.push_back(Event {
-                        timestamp,
-                        pid,
-                        log,
-                        kind: EventKind::StopProcess(StopProcessEvent::Killed {
-                            signal: Some(signal.value.to_string()),
-                        }),
-                    });
-                } else {
-                    self.events.push_back(Event {
-                        timestamp,
-                        pid,
-                        log,
-                        kind: EventKind::Log,
-                    });
-                }
+                let stopped = StopProcessEvent::Killed {
+                    signal: Some(signal.value.to_string()),
+                };
+                self.handle_stopped(ctx, stopped);
             }
         }
 
@@ -243,10 +164,85 @@ impl EventEmitter {
     pub fn pop_event(&mut self) -> Option<Event> {
         self.events.pop_front()
     }
+
+    fn handle_fork(&mut self, ctx: EventContext, child_pid: Option<i32>) {
+        if let Some(child_pid) = child_pid {
+            self.alive_processes
+                .entry(child_pid)
+                .or_insert_with(|| ProcessState {
+                    parent_pid: Some(ctx.pid),
+                    ..Default::default()
+                });
+        }
+    }
+
+    fn handle_exec(&mut self, ctx: EventContext, exec: ProcessExec) {
+        let process_state = self.alive_processes.entry(ctx.pid).or_default();
+
+        if process_state.did_exec {
+            self.events.push_back(Event {
+                timestamp: ctx.timestamp,
+                pid: ctx.pid,
+                log: ctx.log.clone(),
+                kind: EventKind::StopProcess(StopProcessEvent::ReExeced),
+            });
+        }
+        process_state.did_exec = true;
+
+        self.events.push_back(Event {
+            timestamp: ctx.timestamp,
+            pid: ctx.pid,
+            log: ctx.log,
+            kind: EventKind::StartProcess(StartProcessEvent {
+                parent_pid: process_state.parent_pid,
+                command: exec.command,
+                args: exec.args,
+                env: exec.env,
+            }),
+        });
+    }
+
+    fn handle_stopped(&mut self, ctx: EventContext, stopped: StopProcessEvent) {
+        let did_stop_process = self
+            .alive_processes
+            .remove(&ctx.pid)
+            .is_some_and(|state| state.did_exec);
+        if did_stop_process {
+            self.events.push_back(Event {
+                timestamp: ctx.timestamp,
+                pid: ctx.pid,
+                log: ctx.log,
+                kind: EventKind::StopProcess(stopped),
+            });
+        } else {
+            self.handle_log(ctx);
+        }
+    }
+
+    fn handle_log(&mut self, ctx: EventContext) {
+        self.events.push_back(Event {
+            timestamp: ctx.timestamp,
+            pid: ctx.pid,
+            log: ctx.log,
+            kind: EventKind::Log,
+        });
+    }
 }
 
 #[derive(Default)]
 struct ProcessState {
     parent_pid: Option<Pid>,
     did_exec: bool,
+}
+
+struct EventContext {
+    timestamp: jiff::Timestamp,
+    pid: Pid,
+    log: String,
+}
+
+struct ProcessExec {
+    command: Option<bstr::BString>,
+    args: Option<Vec<bstr::BString>>,
+    env: Option<Vec<(bstr::BString, bstr::BString)>>,
 }
