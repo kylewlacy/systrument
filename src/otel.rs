@@ -54,16 +54,19 @@ where
         let adjusted_timestamp = self.adjust_timestamp(event.timestamp);
 
         let root_span = self.root_span.get_or_init(|| {
-            let mut cx = opentelemetry::Context::new();
-            if let Some(parent_span_id) = self.options.parent_span_id {
-                cx = cx.with_remote_span_context(opentelemetry::trace::SpanContext::new(
+            let parent_span_id = self
+                .options
+                .parent_span_id
+                .unwrap_or_else(|| opentelemetry::SpanId::INVALID);
+            let cx = opentelemetry::Context::new().with_remote_span_context(
+                opentelemetry::trace::SpanContext::new(
                     self.trace_id,
                     parent_span_id,
                     Default::default(),
                     false,
                     Default::default(),
-                ));
-            }
+                ),
+            );
             self.tracer
                 .span_builder(ROOT_SPAN_NAME)
                 .with_start_time(adjusted_timestamp)
