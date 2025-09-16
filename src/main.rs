@@ -132,20 +132,26 @@ fn strace_to_otel(args: StraceToOtelArgs) -> miette::Result<()> {
         )
         .build();
     let otel_tracer = otel_trace_provider.tracer("systrument");
-    let otel_log_exporter = opentelemetry_otlp::LogExporter::builder()
-        .with_http()
-        .build()
-        .into_diagnostic()
-        .wrap_err("failed to build OTLP log exporter")?;
-    let otel_log_provider = opentelemetry_sdk::logs::SdkLoggerProvider::builder()
-        .with_batch_exporter(otel_log_exporter)
-        .with_resource(
-            opentelemetry_sdk::Resource::builder()
-                .with_attribute(opentelemetry::KeyValue::new("service.name", "systrument"))
-                .build(),
-        )
-        .build();
-    let otel_logger = otel_log_provider.logger("systrument");
+
+    let (otel_logger, otel_log_provider) = if args.logs {
+        let otel_log_exporter = opentelemetry_otlp::LogExporter::builder()
+            .with_http()
+            .build()
+            .into_diagnostic()
+            .wrap_err("failed to build OTLP log exporter")?;
+        let otel_log_provider = opentelemetry_sdk::logs::SdkLoggerProvider::builder()
+            .with_batch_exporter(otel_log_exporter)
+            .with_resource(
+                opentelemetry_sdk::Resource::builder()
+                    .with_attribute(opentelemetry::KeyValue::new("service.name", "systrument"))
+                    .build(),
+            )
+            .build();
+        let otel_logger = otel_log_provider.logger("systrument");
+        (Some(otel_logger), Some(otel_log_provider))
+    } else {
+        (None, None)
+    };
 
     let mut emitter = systrument::strace::emitter::EventEmitter::default();
 
@@ -210,10 +216,12 @@ fn strace_to_otel(args: StraceToOtelArgs) -> miette::Result<()> {
         .shutdown()
         .into_diagnostic()
         .wrap_err("failed to shutdown OTel trace provider")?;
-    otel_log_provider
-        .shutdown()
-        .into_diagnostic()
-        .wrap_err("failed to shutdown OTel log provider")?;
+    if let Some(otel_log_provider) = otel_log_provider {
+        otel_log_provider
+            .shutdown()
+            .into_diagnostic()
+            .wrap_err("failed to shutdown OTel log provider")?;
+    }
 
     Ok(())
 }

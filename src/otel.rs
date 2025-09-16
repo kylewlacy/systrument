@@ -22,7 +22,7 @@ where
 {
     options: OtelOutputOptions,
     tracer: T,
-    logger: L,
+    logger: Option<L>,
     root_span: std::cell::OnceCell<opentelemetry_sdk::trace::Span>,
     process_spans: HashMap<crate::Pid, opentelemetry_sdk::trace::Span>,
     first_event_timestamp: Option<jiff::Timestamp>,
@@ -34,7 +34,7 @@ where
     T: opentelemetry::trace::Tracer<Span = opentelemetry_sdk::trace::Span>,
     L: opentelemetry::logs::Logger<LogRecord = opentelemetry_sdk::logs::SdkLogRecord>,
 {
-    pub fn new(tracer: T, logger: L, options: OtelOutputOptions) -> Self {
+    pub fn new(tracer: T, logger: Option<L>, options: OtelOutputOptions) -> Self {
         Self {
             options,
             logger,
@@ -134,15 +134,17 @@ where
             crate::event::EventKind::Log => {
                 let root_span_context = self.root_span(event.timestamp).span_context().clone();
 
-                let mut log = self.logger.create_log_record();
-                log.set_timestamp(adjusted_timestamp.into());
-                log.set_body(event.log.into());
-                log.set_trace_context(
-                    root_span_context.trace_id(),
-                    root_span_context.span_id(),
-                    None,
-                );
-                self.logger.emit(log);
+                if let Some(logger) = &self.logger {
+                    let mut log = logger.create_log_record();
+                    log.set_timestamp(adjusted_timestamp.into());
+                    log.set_body(event.log.into());
+                    log.set_trace_context(
+                        root_span_context.trace_id(),
+                        root_span_context.span_id(),
+                        None,
+                    );
+                    logger.emit(log);
+                }
             }
         };
 
