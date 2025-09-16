@@ -195,6 +195,7 @@ impl EventEmitter {
             self.events.push_back(Event {
                 timestamp: ctx.timestamp,
                 pid: ctx.pid,
+                parent_pid: process_state.parent_pid,
                 owner_pid: process_state.owner_pid,
                 log: ctx.log.clone(),
                 kind: EventKind::StopProcess(StopProcessEvent::ReExeced),
@@ -205,6 +206,7 @@ impl EventEmitter {
         self.events.push_back(Event {
             timestamp: ctx.timestamp,
             pid: ctx.pid,
+            parent_pid: process_state.parent_pid,
             owner_pid: process_state.owner_pid,
             log: ctx.log,
             kind: EventKind::StartProcess(StartProcessEvent {
@@ -233,6 +235,7 @@ impl EventEmitter {
             self.events.push_back(Event {
                 timestamp: ctx.timestamp,
                 pid: ctx.pid,
+                parent_pid: process_state.parent_pid,
                 owner_pid: process_state.owner_pid,
                 log: ctx.log,
                 kind: EventKind::StopProcess(stopped),
@@ -261,11 +264,13 @@ impl EventEmitter {
 
     fn handle_log(&mut self, ctx: EventContext) {
         let process_state = self.processes.get(&ctx.pid);
+        let parent_pid = process_state.and_then(|process_state| process_state.parent_pid);
         let owner_pid = process_state.and_then(|process_state| process_state.owner_pid);
 
         self.events.push_back(Event {
             timestamp: ctx.timestamp,
             pid: ctx.pid,
+            parent_pid,
             owner_pid,
             log: ctx.log,
             kind: EventKind::Log,

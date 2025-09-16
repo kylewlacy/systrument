@@ -69,6 +69,12 @@ where
                     opentelemetry::Context::new().with_remote_span_context(parent_span_context);
                 let attributes =
                     std::iter::once(opentelemetry::KeyValue::new("pid", i64::from(event.pid)))
+                        .chain(event.parent_pid.map(|parent_pid| {
+                            opentelemetry::KeyValue::new("parent_pid", i64::from(parent_pid))
+                        }))
+                        .chain(event.owner_pid.map(|owner_pid| {
+                            opentelemetry::KeyValue::new("owner_pid", i64::from(owner_pid))
+                        }))
                         .chain(
                             start_process
                                 .command_name()
