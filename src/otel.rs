@@ -9,8 +9,6 @@ const ROOT_SPAN_NAME: &str = "processes";
 
 #[derive(Debug, Default)]
 pub struct OtelOutputOptions {
-    pub trace_id: Option<opentelemetry::TraceId>,
-    pub parent_span_id: Option<opentelemetry::SpanId>,
     pub relative_to: Option<jiff::Timestamp>,
 }
 
@@ -32,9 +30,7 @@ where
     T: opentelemetry::trace::Tracer<Span = opentelemetry_sdk::trace::Span>,
 {
     pub fn new(tracer: T, options: OtelOutputOptions) -> Self {
-        let trace_id = options
-            .trace_id
-            .unwrap_or_else(|| opentelemetry::TraceId::from(rand::random::<u128>()));
+        let trace_id = opentelemetry::TraceId::from(rand::random::<u128>());
 
         Self {
             options,
@@ -54,14 +50,10 @@ where
         let adjusted_timestamp = self.adjust_timestamp(event.timestamp);
 
         let root_span = self.root_span.get_or_init(|| {
-            let parent_span_id = self
-                .options
-                .parent_span_id
-                .unwrap_or_else(|| opentelemetry::SpanId::INVALID);
             let cx = opentelemetry::Context::new().with_remote_span_context(
                 opentelemetry::trace::SpanContext::new(
                     self.trace_id,
-                    parent_span_id,
+                    opentelemetry::SpanId::INVALID,
                     Default::default(),
                     false,
                     Default::default(),

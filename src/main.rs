@@ -148,11 +148,7 @@ fn strace_to_otel(args: StraceToOtelArgs) -> miette::Result<()> {
     };
     let mut otel_writer = systrument::otel::OtelOutput::new(
         otel_tracer,
-        systrument::otel::OtelOutputOptions {
-            trace_id: None,
-            parent_span_id: None,
-            relative_to,
-        },
+        systrument::otel::OtelOutputOptions { relative_to },
     );
 
     let input_name = if args.input.is_stdin() {
