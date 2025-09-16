@@ -18,7 +18,6 @@ where
 {
     options: OtelOutputOptions,
     tracer: T,
-    trace_id: opentelemetry::TraceId,
     root_span: std::cell::OnceCell<opentelemetry_sdk::trace::Span>,
     process_spans: HashMap<crate::Pid, opentelemetry_sdk::trace::Span>,
     first_event_timestamp: Option<jiff::Timestamp>,
@@ -30,14 +29,11 @@ where
     T: opentelemetry::trace::Tracer<Span = opentelemetry_sdk::trace::Span>,
 {
     pub fn new(tracer: T, options: OtelOutputOptions) -> Self {
-        let trace_id = opentelemetry::TraceId::from(rand::random::<u128>());
-
         Self {
             options,
             tracer,
             process_spans: HashMap::new(),
             root_span: OnceCell::new(),
-            trace_id,
             first_event_timestamp: None,
             last_event_timestamp: None,
         }
@@ -49,34 +45,21 @@ where
 
         let adjusted_timestamp = self.adjust_timestamp(event.timestamp);
 
-        let root_span = self.root_span.get_or_init(|| {
-            let cx = opentelemetry::Context::new().with_remote_span_context(
-                opentelemetry::trace::SpanContext::new(
-                    self.trace_id,
-                    opentelemetry::SpanId::INVALID,
-                    Default::default(),
-                    false,
-                    Default::default(),
-                ),
-            );
-            self.tracer
-                .span_builder(ROOT_SPAN_NAME)
-                .with_start_time(adjusted_timestamp)
-                .start_with_context(&self.tracer, &cx)
-        });
-
         match event.kind {
             crate::event::EventKind::StartProcess(start_process) => {
                 let command_name = start_process.command_name().map_or_else(
                     || format!("process {}", event.pid),
                     |command_name| command_name.to_str_lossy().into_owned(),
                 );
-                let parent_span = start_process
+                let parent_span_context = start_process
                     .owner_pid
-                    .and_then(|owner_pid| self.process_spans.get(&owner_pid))
-                    .unwrap_or(root_span);
-                let cx = opentelemetry::Context::new()
-                    .with_remote_span_context(parent_span.span_context().clone());
+                    .and_then(|owner_pid| {
+                        let span = self.process_spans.get(&owner_pid)?;
+                        Some(span.span_context().clone())
+                    })
+                    .unwrap_or_else(|| self.root_span(event.timestamp).span_context().clone());
+                let cx =
+                    opentelemetry::Context::new().with_remote_span_context(parent_span_context);
                 let attributes =
                     std::iter::once(opentelemetry::KeyValue::new("pid", event.pid.to_string()))
                         .chain(
@@ -158,6 +141,20 @@ where
 
         let duration = event_timestamp - first_event_timestamp;
         relative_to + duration
+    }
+
+    fn root_span(&mut self, event_timestamp: jiff::Timestamp) -> &opentelemetry_sdk::trace::Span {
+        let first_event_timestamp = self.first_event_timestamp.unwrap_or(event_timestamp);
+        self.first_event_timestamp = Some(first_event_timestamp);
+
+        let adjusted_timestamp = self.adjust_timestamp(first_event_timestamp);
+
+        self.root_span.get_or_init(|| {
+            self.tracer
+                .span_builder(ROOT_SPAN_NAME)
+                .with_start_time(adjusted_timestamp)
+                .start(&self.tracer)
+        })
     }
 }
 
