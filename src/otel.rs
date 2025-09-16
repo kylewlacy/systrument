@@ -132,17 +132,19 @@ where
                 }
             }
             crate::event::EventKind::Log => {
-                let root_span_context = self.root_span(event.timestamp).span_context().clone();
+                if self.logger.is_some() {
+                    let span_context = self
+                        .process_spans
+                        .get(&event.pid)
+                        .or_else(|| self.process_spans.get(&event.owner_pid?))
+                        .map(|span| span.span_context().clone())
+                        .unwrap_or_else(|| self.root_span(event.timestamp).span_context().clone());
+                    let logger = self.logger.as_ref().unwrap();
 
-                if let Some(logger) = &self.logger {
                     let mut log = logger.create_log_record();
                     log.set_timestamp(adjusted_timestamp.into());
                     log.set_body(event.log.into());
-                    log.set_trace_context(
-                        root_span_context.trace_id(),
-                        root_span_context.span_id(),
-                        None,
-                    );
+                    log.set_trace_context(span_context.trace_id(), span_context.span_id(), None);
                     logger.emit(log);
                 }
             }

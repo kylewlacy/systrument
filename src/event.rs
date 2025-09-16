@@ -6,6 +6,7 @@ use crate::Pid;
 pub struct Event {
     pub timestamp: jiff::Timestamp,
     pub pid: Pid,
+    pub owner_pid: Option<Pid>,
     pub log: String,
     pub kind: EventKind,
 }
