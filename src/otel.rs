@@ -131,24 +131,24 @@ where
                     span.end_with_timestamp(adjusted_timestamp.into());
                 }
             }
-            crate::event::EventKind::Log => {
-                if self.logger.is_some() {
-                    let span_context = self
-                        .process_spans
-                        .get(&event.pid)
-                        .or_else(|| self.process_spans.get(&event.owner_pid?))
-                        .map(|span| span.span_context().clone())
-                        .unwrap_or_else(|| self.root_span(event.timestamp).span_context().clone());
-                    let logger = self.logger.as_ref().unwrap();
-
-                    let mut log = logger.create_log_record();
-                    log.set_timestamp(adjusted_timestamp.into());
-                    log.set_body(event.log.into());
-                    log.set_trace_context(span_context.trace_id(), span_context.span_id(), None);
-                    logger.emit(log);
-                }
-            }
+            crate::event::EventKind::Log => {}
         };
+
+        if self.logger.is_some() {
+            let span_context = self
+                .process_spans
+                .get(&event.pid)
+                .or_else(|| self.process_spans.get(&event.owner_pid?))
+                .map(|span| span.span_context().clone())
+                .unwrap_or_else(|| self.root_span(event.timestamp).span_context().clone());
+            let logger = self.logger.as_ref().unwrap();
+
+            let mut log = logger.create_log_record();
+            log.set_timestamp(adjusted_timestamp.into());
+            log.set_body(event.log.into());
+            log.set_trace_context(span_context.trace_id(), span_context.span_id(), None);
+            logger.emit(log);
+        }
 
         Ok(())
     }
