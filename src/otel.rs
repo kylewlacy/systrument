@@ -1,7 +1,10 @@
 use std::{cell::OnceCell, collections::HashMap};
 
 use bstr::ByteSlice as _;
-use opentelemetry::trace::{Span as _, TraceContextExt};
+use opentelemetry::{
+    logs::LogRecord as _,
+    trace::{Span as _, TraceContextExt},
+};
 
 use crate::event::Event;
 
@@ -12,25 +15,29 @@ pub struct OtelOutputOptions {
     pub relative_to: Option<jiff::Timestamp>,
 }
 
-pub struct OtelOutput<T>
+pub struct OtelOutput<T, L>
 where
     T: opentelemetry::trace::Tracer<Span = opentelemetry_sdk::trace::Span>,
+    L: opentelemetry::logs::Logger<LogRecord = opentelemetry_sdk::logs::SdkLogRecord>,
 {
     options: OtelOutputOptions,
     tracer: T,
+    logger: L,
     root_span: std::cell::OnceCell<opentelemetry_sdk::trace::Span>,
     process_spans: HashMap<crate::Pid, opentelemetry_sdk::trace::Span>,
     first_event_timestamp: Option<jiff::Timestamp>,
     last_event_timestamp: Option<jiff::Timestamp>,
 }
 
-impl<T> OtelOutput<T>
+impl<T, L> OtelOutput<T, L>
 where
     T: opentelemetry::trace::Tracer<Span = opentelemetry_sdk::trace::Span>,
+    L: opentelemetry::logs::Logger<LogRecord = opentelemetry_sdk::logs::SdkLogRecord>,
 {
-    pub fn new(tracer: T, options: OtelOutputOptions) -> Self {
+    pub fn new(tracer: T, logger: L, options: OtelOutputOptions) -> Self {
         Self {
             options,
+            logger,
             tracer,
             process_spans: HashMap::new(),
             root_span: OnceCell::new(),
@@ -124,7 +131,19 @@ where
                     span.end_with_timestamp(adjusted_timestamp.into());
                 }
             }
-            crate::event::EventKind::Log => {}
+            crate::event::EventKind::Log => {
+                let root_span_context = self.root_span(event.timestamp).span_context().clone();
+
+                let mut log = self.logger.create_log_record();
+                log.set_timestamp(adjusted_timestamp.into());
+                log.set_body(event.log.into());
+                log.set_trace_context(
+                    root_span_context.trace_id(),
+                    root_span_context.span_id(),
+                    None,
+                );
+                self.logger.emit(log);
+            }
         };
 
         Ok(())
@@ -158,9 +177,10 @@ where
     }
 }
 
-impl<T> Drop for OtelOutput<T>
+impl<T, L> Drop for OtelOutput<T, L>
 where
     T: opentelemetry::trace::Tracer<Span = opentelemetry_sdk::trace::Span>,
+    L: opentelemetry::logs::Logger<LogRecord = opentelemetry_sdk::logs::SdkLogRecord>,
 {
     fn drop(&mut self) {
         if let Some(mut root_span) = self.root_span.take() {
