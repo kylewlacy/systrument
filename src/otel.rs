@@ -141,6 +141,18 @@ where
         };
 
         if self.logger.is_some() {
+            let log_attributes = std::iter::once(("pid", i64::from(event.pid)))
+                .chain(
+                    event
+                        .parent_pid
+                        .map(|parent_pid| ("parent_pid", i64::from(parent_pid))),
+                )
+                .chain(
+                    event
+                        .owner_pid
+                        .map(|owner_pid| ("owner_pid", i64::from(owner_pid))),
+                );
+
             let span_context = self
                 .process_spans
                 .get(&event.pid)
@@ -153,6 +165,7 @@ where
             log.set_timestamp(adjusted_timestamp.into());
             log.set_body(event.log.into());
             log.set_trace_context(span_context.trace_id(), span_context.span_id(), None);
+            log.add_attributes(log_attributes);
             logger.emit(log);
         }
 
