@@ -91,6 +91,7 @@ pub fn parse_line<'a>(line: &'a str) -> Result<Line<'a>, StraceParseError> {
     };
 
     Ok(Line {
+        line,
         pid: pid.value,
         timestamp: timestamp.value,
         event,

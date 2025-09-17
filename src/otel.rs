@@ -53,12 +53,12 @@ where
         let adjusted_timestamp = self.adjust_timestamp(event.timestamp);
 
         match event.kind {
-            crate::event::EventKind::StartProcess(start_process) => {
-                let command_name = start_process.command_name().map_or_else(
+            crate::event::EventKind::ExecProcess(exec_process_event) => {
+                let command_name = exec_process_event.exec.command_name().map_or_else(
                     || format!("process {}", event.pid),
                     |command_name| command_name.to_str_lossy().into_owned(),
                 );
-                let parent_span_context = start_process
+                let parent_span_context = event
                     .owner_pid
                     .and_then(|owner_pid| {
                         let span = self.process_spans.get(&owner_pid)?;
@@ -75,24 +75,21 @@ where
                         .chain(event.owner_pid.map(|owner_pid| {
                             opentelemetry::KeyValue::new("owner_pid", i64::from(owner_pid))
                         }))
-                        .chain(
-                            start_process
-                                .command_name()
-                                .into_iter()
-                                .map(|command_name| {
-                                    opentelemetry::KeyValue::new(
-                                        "command_name",
-                                        command_name.to_str_lossy().into_owned(),
-                                    )
-                                }),
-                        )
-                        .chain(start_process.command.iter().map(|command| {
+                        .chain(exec_process_event.exec.command_name().into_iter().map(
+                            |command_name| {
+                                opentelemetry::KeyValue::new(
+                                    "command_name",
+                                    command_name.to_str_lossy().into_owned(),
+                                )
+                            },
+                        ))
+                        .chain(exec_process_event.exec.command.iter().map(|command| {
                             opentelemetry::KeyValue::new(
                                 "command",
                                 command.to_str_lossy().into_owned(),
                             )
                         }))
-                        .chain(start_process.args.iter().map(|args| {
+                        .chain(exec_process_event.exec.args.iter().map(|args| {
                             opentelemetry::KeyValue::new(
                                 "args",
                                 opentelemetry::Value::Array(opentelemetry::Array::String(
@@ -108,12 +105,17 @@ where
                     .with_start_time(adjusted_timestamp)
                     .with_attributes(attributes)
                     .start_with_context(&self.tracer, &cx);
-                self.process_spans.insert(event.pid, span);
+                let prev_span = self.process_spans.insert(event.pid, span);
+
+                if let Some(mut prev_span) = prev_span {
+                    prev_span.set_attribute(opentelemetry::KeyValue::new("re_exec", true));
+                    prev_span.end_with_timestamp(adjusted_timestamp.into());
+                }
             }
-            crate::event::EventKind::StopProcess(stopped) => {
+            crate::event::EventKind::StopProcess(stop_process_event) => {
                 if let Some(mut span) = self.process_spans.remove(&event.pid) {
-                    match stopped {
-                        crate::event::StopProcessEvent::Exited { code } => {
+                    match stop_process_event.stopped {
+                        crate::event::ProcessStoppedReason::Exited { code } => {
                             if let Some(code) = code {
                                 span.set_attributes([
                                     opentelemetry::KeyValue::new("exit_code", i64::from(code)),
@@ -121,7 +123,7 @@ where
                                 ]);
                             }
                         }
-                        crate::event::StopProcessEvent::Killed { signal } => {
+                        crate::event::ProcessStoppedReason::Killed { signal } => {
                             span.set_attributes(
                                 std::iter::once(opentelemetry::KeyValue::new("exit_ok", false))
                                     .chain(signal.map(|signal| {
@@ -129,15 +131,12 @@ where
                                     })),
                             );
                         }
-                        crate::event::StopProcessEvent::ReExeced => {
-                            span.set_attribute(opentelemetry::KeyValue::new("re_exec", true));
-                        }
                     }
 
                     span.end_with_timestamp(adjusted_timestamp.into());
                 }
             }
-            crate::event::EventKind::Log => {}
+            crate::event::EventKind::ForkProcess(_) | crate::event::EventKind::Log => {}
         };
 
         if self.logger.is_some() {
@@ -163,7 +162,7 @@ where
 
             let mut log = logger.create_log_record();
             log.set_timestamp(adjusted_timestamp.into());
-            log.set_body(event.log.into());
+            log.set_body(event.strace.line.to_string().into());
             log.set_trace_context(span_context.trace_id(), span_context.span_id(), None);
             log.add_attributes(log_attributes);
             logger.emit(log);

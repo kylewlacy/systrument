@@ -4,11 +4,12 @@ use blame_on::Blame;
 
 use crate::Pid;
 
-pub mod emitter;
+pub mod analyzer;
 pub mod parser;
 
 #[derive(Debug)]
 pub struct Line<'a> {
+    pub line: &'a str,
     pub pid: Pid,
     pub timestamp: jiff::Timestamp,
     pub event: Event<'a>,

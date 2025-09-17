@@ -59,7 +59,7 @@ fn main() -> miette::Result<()> {
 }
 
 fn strace_to_perfetto(args: StraceToPerfettoArgs) -> miette::Result<()> {
-    let mut emitter = systrument::strace::emitter::EventEmitter::default();
+    let mut emitter = systrument::strace::analyzer::Analyzer::default();
 
     let input = args
         .input
@@ -98,20 +98,21 @@ fn strace_to_perfetto(args: StraceToPerfettoArgs) -> miette::Result<()> {
             }
         };
 
-        if let Err(error) = emitter.push_line(strace, line.clone()) {
-            let report = miette::Report::new(error).with_source_code(
-                systrument::utils::OffsetSource::new_named(&input_name, line)
-                    .with_line_offset(line_index),
-            );
-            println!("{report:?}");
-            continue;
-        }
+        let event = match emitter.analyze(strace) {
+            Ok(event) => event,
+            Err(error) => {
+                let report = miette::Report::new(error).with_source_code(
+                    systrument::utils::OffsetSource::new_named(&input_name, line)
+                        .with_line_offset(line_index),
+                );
+                println!("{report:?}");
+                continue;
+            }
+        };
 
-        while let Some(event) = emitter.pop_event() {
-            perfetto_writer
-                .output_event(event)
-                .expect("error writing Perfetto event");
-        }
+        perfetto_writer
+            .output_event(event)
+            .expect("error writing Perfetto event");
     }
 
     Ok(())
@@ -153,7 +154,7 @@ fn strace_to_otel(args: StraceToOtelArgs) -> miette::Result<()> {
         (None, None)
     };
 
-    let mut emitter = systrument::strace::emitter::EventEmitter::default();
+    let mut emitter = systrument::strace::analyzer::Analyzer::default();
 
     let input = args
         .input
@@ -194,20 +195,21 @@ fn strace_to_otel(args: StraceToOtelArgs) -> miette::Result<()> {
             }
         };
 
-        if let Err(error) = emitter.push_line(strace, line.clone()) {
-            let report = miette::Report::new(error).with_source_code(
-                systrument::utils::OffsetSource::new_named(&input_name, line)
-                    .with_line_offset(line_index),
-            );
-            println!("{report:?}");
-            continue;
-        }
+        let event = match emitter.analyze(strace) {
+            Ok(event) => event,
+            Err(error) => {
+                let report = miette::Report::new(error).with_source_code(
+                    systrument::utils::OffsetSource::new_named(&input_name, line)
+                        .with_line_offset(line_index),
+                );
+                println!("{report:?}");
+                continue;
+            }
+        };
 
-        while let Some(event) = emitter.pop_event() {
-            otel_writer
-                .output_event(event)
-                .expect("error writing OTel event");
-        }
+        otel_writer
+            .output_event(event)
+            .expect("error writing OTel event");
     }
 
     drop(otel_writer);

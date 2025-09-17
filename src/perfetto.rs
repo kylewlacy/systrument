@@ -82,7 +82,7 @@ impl<W: std::io::Write> PerfettoOutput<W> {
 
     pub fn output_event(&mut self, event: Event) -> Result<(), Box<dyn std::error::Error>> {
         let pid = event.pid;
-        let track_uuid = *self
+        let mut track_uuid = *self
             .track_uuids_by_pid
             .entry(pid)
             .or_insert_with(|| rand::random());
@@ -102,7 +102,7 @@ impl<W: std::io::Write> PerfettoOutput<W> {
                 interned_data: MessageField::some(InternedData {
                     log_message_body: vec![LogMessageBody {
                         iid: Some(log_body_iid),
-                        body: Some(format!("{}\n", event.log)),
+                        body: Some(format!("{}\n", event.strace.line)),
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -124,11 +124,35 @@ impl<W: std::io::Write> PerfettoOutput<W> {
         };
 
         match event.kind {
-            crate::event::EventKind::StartProcess(start_process) => {
-                let command_name = start_process
+            crate::event::EventKind::ExecProcess(exec_process_event) => {
+                if exec_process_event.re_exec {
+                    // If the `exec` happened on an existing track, end the
+                    // current track first
+
+                    self.packets.push(TracePacket {
+                        timestamp: Some(timestamp),
+                        optional_trusted_packet_sequence_id: Some(
+                            self.trusted_packet_sequence_id.clone(),
+                        ),
+                        data: Some(trace_packet::Data::TrackEvent(TrackEvent {
+                            track_uuid: Some(track_uuid),
+                            type_: Some(EnumOrUnknown::new(track_event::Type::TYPE_SLICE_END)),
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    });
+
+                    // Generate a new UUID for the new exec track
+                    track_uuid = rand::random();
+                    self.track_uuids_by_pid.insert(pid, track_uuid);
+                }
+
+                let command_name = exec_process_event
+                    .exec
                     .command_name()
                     .map(|command_name| command_name.to_owned());
-                let debug_annotations = start_process
+                let debug_annotations = exec_process_event
+                    .exec
                     .command
                     .into_iter()
                     .map(|command| DebugAnnotation {
@@ -138,7 +162,7 @@ impl<W: std::io::Write> PerfettoOutput<W> {
                         )),
                         ..Default::default()
                     })
-                    .chain(start_process.args.into_iter().map(|args| {
+                    .chain(exec_process_event.exec.args.into_iter().map(|args| {
                         DebugAnnotation {
                             name_field: Some(debug_annotation::Name_field::Name(
                                 "args".to_string(),
@@ -155,7 +179,7 @@ impl<W: std::io::Write> PerfettoOutput<W> {
                             ..Default::default()
                         }
                     }))
-                    .chain(start_process.env.into_iter().map(|env| {
+                    .chain(exec_process_event.exec.env.into_iter().map(|env| {
                         DebugAnnotation {
                             name_field: Some(debug_annotation::Name_field::Name("env".to_string())),
                             dict_entries: env
@@ -226,7 +250,7 @@ impl<W: std::io::Write> PerfettoOutput<W> {
                     ..Default::default()
                 });
             }
-            crate::event::EventKind::Log => {
+            crate::event::EventKind::ForkProcess(_) | crate::event::EventKind::Log => {
                 self.packets.extend(log_packet);
             }
         };

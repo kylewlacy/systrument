@@ -1,37 +1,32 @@
-use std::{
-    borrow::Cow,
-    collections::{HashMap, VecDeque},
-};
+use std::{borrow::Cow, collections::HashMap};
 
 use bstr::ByteSlice;
 
 use crate::{
     Pid,
-    event::{Event, EventKind, StartProcessEvent, StopProcessEvent},
+    event::{
+        Event, EventKind, ExecProcessEvent, ForkProcessEvent, ProcessExec, ProcessStoppedReason,
+        StopProcessEvent,
+    },
     strace::parser::StraceParseError,
 };
 
 #[derive(Default)]
-pub struct EventEmitter {
+pub struct Analyzer {
     processes: HashMap<Pid, ProcessState>,
-    events: VecDeque<Event>,
 }
 
-impl EventEmitter {
-    pub fn push_line(&mut self, line: super::Line, log: String) -> Result<(), StraceParseError> {
-        let ctx = EventContext {
-            log,
-            pid: line.pid,
-            timestamp: line.timestamp,
-        };
-
-        match line.event {
+impl Analyzer {
+    pub fn analyze<'a>(&mut self, line: super::Line<'a>) -> Result<Event<'a>, StraceParseError> {
+        let kind = match &line.event {
             super::Event::Syscall(event) => match event.name {
                 "fork" | "vfork" | "clone" | "clone3" => {
                     let result = event.result()?;
 
                     let child_pid = result.returned.and_then(|value| value.as_i32());
-                    self.handle_fork(ctx, child_pid);
+                    child_pid.map_or(EventKind::Log, |child_pid| {
+                        self.handle_fork(&line, child_pid)
+                    })
                 }
                 "execve" => {
                     let args = event.args()?;
@@ -68,13 +63,13 @@ impl EventEmitter {
                         });
 
                     self.handle_exec(
-                        ctx,
+                        &line,
                         ProcessExec {
                             command,
                             args: exec_args,
                             env,
                         },
-                    );
+                    )
                 }
                 "execveat" => {
                     let args = event.args()?;
@@ -127,102 +122,82 @@ impl EventEmitter {
                         });
 
                     self.handle_exec(
-                        ctx,
+                        &line,
                         ProcessExec {
                             command,
                             args: exec_args,
                             env,
                         },
-                    );
+                    )
                 }
-                _ => {
-                    self.handle_log(ctx);
-                }
+                _ => EventKind::Log,
             },
-            super::Event::Signal { .. } => {
-                self.handle_log(ctx);
-            }
+            super::Event::Signal { .. } => EventKind::Log,
             super::Event::Exited(event) => {
                 let code = event.code()?;
-                let stopped = StopProcessEvent::Exited {
+                let stopped = ProcessStoppedReason::Exited {
                     code: code.as_i32(),
                 };
-                self.handle_stopped(ctx, stopped);
+                self.handle_stopped(&line, stopped)
             }
             super::Event::KilledBy { signal_string } => {
                 let signal = signal_string.split(" ").next().unwrap();
-                let stopped = StopProcessEvent::Killed {
+                let stopped = ProcessStoppedReason::Killed {
                     signal: Some(signal.value.to_string()),
                 };
-                self.handle_stopped(ctx, stopped);
+                self.handle_stopped(&line, stopped)
             }
-        }
+        };
 
-        Ok(())
+        let process_state = self.processes.get(&line.pid);
+
+        Ok(Event {
+            kind,
+            owner_pid: process_state.and_then(|state| state.owner_pid),
+            parent_pid: process_state.and_then(|state| state.parent_pid),
+            pid: line.pid,
+            timestamp: line.timestamp,
+            strace: line,
+        })
     }
 
-    pub fn pop_event(&mut self) -> Option<Event> {
-        self.events.pop_front()
+    fn handle_fork(&mut self, strace: &super::Line, child_pid: Pid) -> EventKind {
+        let child_owner_pid = self.find_owner_pid(strace.pid);
+        let child_process_state = self
+            .processes
+            .entry(child_pid)
+            .or_insert_with(|| ProcessState {
+                parent_pid: Some(strace.pid),
+                owner_pid: child_owner_pid,
+                status: ProcessStatus::Forked,
+            });
+
+        EventKind::ForkProcess(ForkProcessEvent {
+            child_pid,
+            child_owner_pid: child_process_state.owner_pid,
+        })
     }
 
-    fn handle_fork(&mut self, ctx: EventContext, child_pid: Option<i32>) {
-        if let Some(child_pid) = child_pid {
-            let owner_pid = self.find_owner_pid(ctx.pid);
-
-            self.processes
-                .entry(child_pid)
-                .or_insert_with(|| ProcessState {
-                    parent_pid: Some(ctx.pid),
-                    owner_pid,
-                    status: ProcessStatus::Forked,
-                });
-        }
-
-        self.handle_log(ctx);
-    }
-
-    fn handle_exec(&mut self, ctx: EventContext, exec: ProcessExec) {
+    fn handle_exec(&mut self, strace: &super::Line, exec: ProcessExec) -> EventKind {
         let process_state = self
             .processes
-            .entry(ctx.pid)
+            .entry(strace.pid)
             .or_insert_with(|| ProcessState {
                 parent_pid: None,
                 owner_pid: None,
                 status: ProcessStatus::Forked,
             });
 
-        if matches!(process_state.status, ProcessStatus::Execed) {
-            self.events.push_back(Event {
-                timestamp: ctx.timestamp,
-                pid: ctx.pid,
-                parent_pid: process_state.parent_pid,
-                owner_pid: process_state.owner_pid,
-                log: ctx.log.clone(),
-                kind: EventKind::StopProcess(StopProcessEvent::ReExeced),
-            });
-        }
+        let re_exec = matches!(process_state.status, ProcessStatus::Execed);
         process_state.status = ProcessStatus::Execed;
 
-        self.events.push_back(Event {
-            timestamp: ctx.timestamp,
-            pid: ctx.pid,
-            parent_pid: process_state.parent_pid,
-            owner_pid: process_state.owner_pid,
-            log: ctx.log,
-            kind: EventKind::StartProcess(StartProcessEvent {
-                parent_pid: process_state.parent_pid,
-                owner_pid: process_state.owner_pid,
-                command: exec.command,
-                args: exec.args,
-                env: exec.env,
-            }),
-        });
+        EventKind::ExecProcess(ExecProcessEvent { exec, re_exec })
     }
 
-    fn handle_stopped(&mut self, ctx: EventContext, stopped: StopProcessEvent) {
+    fn handle_stopped(&mut self, strace: &super::Line, stopped: ProcessStoppedReason) -> EventKind {
         let process_state = self
             .processes
-            .entry(ctx.pid)
+            .entry(strace.pid)
             .or_insert_with(|| ProcessState {
                 parent_pid: None,
                 owner_pid: None,
@@ -231,18 +206,7 @@ impl EventEmitter {
         let did_exec = matches!(process_state.status, ProcessStatus::Execed);
         process_state.status = ProcessStatus::Stopped;
 
-        if did_exec {
-            self.events.push_back(Event {
-                timestamp: ctx.timestamp,
-                pid: ctx.pid,
-                parent_pid: process_state.parent_pid,
-                owner_pid: process_state.owner_pid,
-                log: ctx.log,
-                kind: EventKind::StopProcess(stopped),
-            });
-        } else {
-            self.handle_log(ctx);
-        }
+        EventKind::StopProcess(StopProcessEvent { stopped, did_exec })
     }
 
     fn find_owner_pid(&self, mut pid: Pid) -> Option<Pid> {
@@ -261,43 +225,18 @@ impl EventEmitter {
             pid = parent_pid;
         }
     }
-
-    fn handle_log(&mut self, ctx: EventContext) {
-        let process_state = self.processes.get(&ctx.pid);
-        let parent_pid = process_state.and_then(|process_state| process_state.parent_pid);
-        let owner_pid = process_state.and_then(|process_state| process_state.owner_pid);
-
-        self.events.push_back(Event {
-            timestamp: ctx.timestamp,
-            pid: ctx.pid,
-            parent_pid,
-            owner_pid,
-            log: ctx.log,
-            kind: EventKind::Log,
-        });
-    }
 }
 
+#[derive(Debug, Clone, Copy)]
 struct ProcessState {
     parent_pid: Option<Pid>,
     owner_pid: Option<Pid>,
     status: ProcessStatus,
 }
 
+#[derive(Debug, Clone, Copy)]
 enum ProcessStatus {
     Forked,
     Execed,
     Stopped,
-}
-
-struct EventContext {
-    timestamp: jiff::Timestamp,
-    pid: Pid,
-    log: String,
-}
-
-struct ProcessExec {
-    command: Option<bstr::BString>,
-    args: Option<Vec<bstr::BString>>,
-    env: Option<Vec<(bstr::BString, bstr::BString)>>,
 }
