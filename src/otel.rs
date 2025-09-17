@@ -140,18 +140,6 @@ where
         };
 
         if self.logger.is_some() {
-            let log_attributes = std::iter::once(("pid", i64::from(event.pid)))
-                .chain(
-                    event
-                        .parent_pid
-                        .map(|parent_pid| ("parent_pid", i64::from(parent_pid))),
-                )
-                .chain(
-                    event
-                        .owner_pid
-                        .map(|owner_pid| ("owner_pid", i64::from(owner_pid))),
-                );
-
             let span_context = self
                 .process_spans
                 .get(&event.pid)
@@ -164,7 +152,52 @@ where
             log.set_timestamp(adjusted_timestamp.into());
             log.set_body(event.strace.line.to_string().into());
             log.set_trace_context(span_context.trace_id(), span_context.span_id(), None);
-            log.add_attributes(log_attributes);
+
+            log.add_attribute("pid", event.pid);
+            if let Some(parent_pid) = event.parent_pid {
+                log.add_attribute("parent_pid", parent_pid);
+            }
+            if let Some(owner_pid) = event.owner_pid {
+                log.add_attribute("owner_pid", owner_pid);
+            }
+
+            match event.strace.event {
+                crate::strace::Event::Syscall(syscall) => {
+                    log.add_attribute(
+                        "strace",
+                        format!(
+                            "{}({}) = {}",
+                            syscall.name, syscall.args_string.value, syscall.result_string.value
+                        ),
+                    );
+                    log.add_attribute("syscall", syscall.name.to_string());
+                    log.add_attribute("args", syscall.args_string.value.to_string());
+                    log.add_attribute("result", syscall.result_string.value.to_string());
+                }
+                crate::strace::Event::Signal { signal } => {
+                    log.add_attribute("strace", format!("--- {signal} ---"));
+                    log.add_attribute("signal", signal.to_string());
+                }
+                crate::strace::Event::Exited(exited_event) => {
+                    log.add_attribute(
+                        "strace",
+                        format!("+++ exited with {} +++", exited_event.code_string.value),
+                    );
+
+                    let exit_code = exited_event.code().ok().and_then(|code| code.as_i32());
+                    if let Some(exit_code) = exit_code {
+                        log.add_attribute("exit_code", exit_code);
+                    }
+                }
+                crate::strace::Event::KilledBy { signal_string } => {
+                    log.add_attribute(
+                        "strace",
+                        format!("+++ killed by {} +++", signal_string.value),
+                    );
+                    log.add_attribute("signal", signal_string.value.to_string());
+                }
+            }
+
             logger.emit(log);
         }
 

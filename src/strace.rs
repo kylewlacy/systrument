@@ -138,7 +138,7 @@ impl Value<'_> {
         }
     }
 
-    fn as_i32(&self) -> Option<i32> {
+    pub(crate) fn as_i32(&self) -> Option<i32> {
         if let Self::Expression(expr) = self {
             expr.parse().ok()
         } else {
