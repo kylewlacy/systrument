@@ -98,7 +98,17 @@ where
                                         .collect(),
                                 )),
                             )
-                        }));
+                        }))
+                        .chain(exec_process_event.exec.env.iter().flatten().map(
+                            |(name, value)| {
+                                opentelemetry::KeyValue::new(
+                                    format!("env.{name}"),
+                                    opentelemetry::Value::String(
+                                        value.to_str_lossy().into_owned().into(),
+                                    ),
+                                )
+                            },
+                        ));
                 let span = self
                     .tracer
                     .span_builder(command_name)
