@@ -7,7 +7,7 @@ use crate::Pid;
 pub mod analyzer;
 pub mod parser;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Line<'a> {
     pub line: &'a str,
     pub pid: Pid,
@@ -15,7 +15,7 @@ pub struct Line<'a> {
     pub event: Event<'a>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Event<'a> {
     Syscall(SyscallEvent<'a>),
     Signal { signal: &'a str },
@@ -23,7 +23,7 @@ pub enum Event<'a> {
     KilledBy { signal_string: Blame<&'a str> },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SyscallEvent<'a> {
     pub name: &'a str,
     pub args_string: Blame<&'a str>,
@@ -49,7 +49,7 @@ pub(crate) struct SyscallResult<'a> {
     pub message: Option<&'a str>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExitedEvent<'a> {
     pub code_string: Blame<&'a str>,
 }

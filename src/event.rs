@@ -2,7 +2,7 @@ use bstr::ByteSlice as _;
 
 use crate::Pid;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Event<'a> {
     pub timestamp: jiff::Timestamp,
     pub pid: Pid,
@@ -12,7 +12,7 @@ pub struct Event<'a> {
     pub kind: EventKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EventKind {
     ForkProcess(ForkProcessEvent),
     ExecProcess(ExecProcessEvent),
@@ -20,19 +20,19 @@ pub enum EventKind {
     Log,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ForkProcessEvent {
     pub child_pid: Pid,
     pub child_owner_pid: Option<Pid>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ExecProcessEvent {
     pub exec: ProcessExec,
     pub re_exec: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ProcessExec {
     pub command: Option<bstr::BString>,
     pub args: Option<Vec<bstr::BString>>,
@@ -51,13 +51,13 @@ impl ProcessExec {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StopProcessEvent {
     pub stopped: ProcessStoppedReason,
     pub did_exec: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ProcessStoppedReason {
     Exited { code: Option<i32> },
     Killed { signal: Option<String> },
