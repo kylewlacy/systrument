@@ -160,7 +160,6 @@ where
 
             let mut log = logger.create_log_record();
             log.set_timestamp(adjusted_timestamp.into());
-            log.set_body(event.strace.line.to_string().into());
             log.set_trace_context(span_context.trace_id(), span_context.span_id(), None);
 
             log.add_attribute("pid", event.pid);
@@ -173,25 +172,24 @@ where
 
             match event.strace.event {
                 crate::strace::Event::Syscall(syscall) => {
-                    log.add_attribute(
-                        "strace",
+                    log.set_body(
                         format!(
                             "{}({}) = {}",
                             syscall.name, syscall.args_string.value, syscall.result_string.value
-                        ),
+                        )
+                        .into(),
                     );
                     log.add_attribute("syscall", syscall.name.to_string());
                     log.add_attribute("args", syscall.args_string.value.to_string());
                     log.add_attribute("result", syscall.result_string.value.to_string());
                 }
                 crate::strace::Event::Signal { signal } => {
-                    log.add_attribute("strace", format!("--- {signal} ---"));
+                    log.set_body(format!("--- {signal} ---").into());
                     log.add_attribute("signal", signal.to_string());
                 }
                 crate::strace::Event::Exited(exited_event) => {
-                    log.add_attribute(
-                        "strace",
-                        format!("+++ exited with {} +++", exited_event.code_string.value),
+                    log.set_body(
+                        format!("+++ exited with {} +++", exited_event.code_string.value).into(),
                     );
 
                     let exit_code = exited_event.code().ok().and_then(|code| code.as_i32());
@@ -200,10 +198,7 @@ where
                     }
                 }
                 crate::strace::Event::KilledBy { signal_string } => {
-                    log.add_attribute(
-                        "strace",
-                        format!("+++ killed by {} +++", signal_string.value),
-                    );
+                    log.set_body(format!("+++ killed by {} +++", signal_string.value).into());
                     log.add_attribute("signal", signal_string.value.to_string());
                 }
             }
