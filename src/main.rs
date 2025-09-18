@@ -1,8 +1,12 @@
-use std::io::BufRead as _;
+use std::{collections::BTreeMap, io::BufRead as _};
 
 use clap::Parser;
 use miette::{Context as _, IntoDiagnostic as _};
 use opentelemetry::{logs::LoggerProvider, trace::TracerProvider as _};
+
+/// The number of strace lines to look at before emitting them. This helps
+/// if strace lines are included out-of-order.
+const WINDOW_SIZE: usize = 100;
 
 #[derive(Debug, Clone, Parser)]
 struct Args {
@@ -82,9 +86,14 @@ fn strace_to_perfetto(args: StraceToPerfettoArgs) -> miette::Result<()> {
         args.input.to_string()
     };
 
+    // Keep a queue of lines as we encounter them (we use a BTreeMap to order
+    // lines by timestamp)
+    let mut queued_lines = BTreeMap::new();
+
     for (line_index, line) in input.lines().enumerate() {
         let line = line.unwrap();
 
+        // Parse the line
         let strace = systrument::strace::parser::parse_line(&line);
         let strace = match strace {
             Ok(strace) => strace,
@@ -97,6 +106,36 @@ fn strace_to_perfetto(args: StraceToPerfettoArgs) -> miette::Result<()> {
                 continue;
             }
         };
+
+        // Add it to the queue, ordered by timestamp
+        queued_lines.insert(strace.timestamp, (line_index, line));
+
+        // Emit any lines beyond the window size
+        while queued_lines.len() > WINDOW_SIZE {
+            let (line_index, line) = queued_lines.first_entry().unwrap().remove();
+            let strace = systrument::strace::parser::parse_line(&line).unwrap();
+
+            let event = match emitter.analyze(strace) {
+                Ok(event) => event,
+                Err(error) => {
+                    let report = miette::Report::new(error).with_source_code(
+                        systrument::utils::OffsetSource::new_named(&input_name, line)
+                            .with_line_offset(line_index),
+                    );
+                    println!("{report:?}");
+                    continue;
+                }
+            };
+
+            perfetto_writer
+                .output_event(event)
+                .expect("error writing Perfetto event");
+        }
+    }
+
+    // Handle remaining queued lines
+    for (line_index, line) in queued_lines.into_values() {
+        let strace = systrument::strace::parser::parse_line(&line).unwrap();
 
         let event = match emitter.analyze(strace) {
             Ok(event) => event,
@@ -179,9 +218,14 @@ fn strace_to_otel(args: StraceToOtelArgs) -> miette::Result<()> {
         args.input.to_string()
     };
 
+    // Keep a queue of lines as we encounter them (we use a BTreeMap to order
+    // lines by timestamp)
+    let mut queued_lines = BTreeMap::new();
+
     for (line_index, line) in input.lines().enumerate() {
         let line = line.unwrap();
 
+        // Parse the line
         let strace = systrument::strace::parser::parse_line(&line);
         let strace = match strace {
             Ok(strace) => strace,
@@ -194,6 +238,36 @@ fn strace_to_otel(args: StraceToOtelArgs) -> miette::Result<()> {
                 continue;
             }
         };
+
+        // Add it to the queue, ordered by timestamp
+        queued_lines.insert(strace.timestamp, (line_index, line));
+
+        // Emit any lines beyond the window size
+        while queued_lines.len() > WINDOW_SIZE {
+            let (line_index, line) = queued_lines.first_entry().unwrap().remove();
+            let strace = systrument::strace::parser::parse_line(&line).unwrap();
+
+            let event = match emitter.analyze(strace) {
+                Ok(event) => event,
+                Err(error) => {
+                    let report = miette::Report::new(error).with_source_code(
+                        systrument::utils::OffsetSource::new_named(&input_name, line)
+                            .with_line_offset(line_index),
+                    );
+                    println!("{report:?}");
+                    continue;
+                }
+            };
+
+            otel_writer
+                .output_event(event)
+                .expect("error writing OTel event");
+        }
+    }
+
+    // Handle remaining queued lines
+    for (line_index, line) in queued_lines.into_values() {
+        let strace = systrument::strace::parser::parse_line(&line).unwrap();
 
         let event = match emitter.analyze(strace) {
             Ok(event) => event,
@@ -212,8 +286,10 @@ fn strace_to_otel(args: StraceToOtelArgs) -> miette::Result<()> {
             .expect("error writing OTel event");
     }
 
+    // Shut down the writer
     drop(otel_writer);
 
+    // Shut down the OpenTelemetry tracer and logger
     otel_trace_provider
         .shutdown()
         .into_diagnostic()
