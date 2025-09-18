@@ -13,6 +13,12 @@ use opentelemetry::{logs::LoggerProvider, trace::TracerProvider as _};
 /// if strace lines are included out-of-order.
 const WINDOW_SIZE: usize = 100;
 
+/// Tools for instrumenting processes (mainly by parsing strace output).
+///
+/// strace output is expected in a specific format, essentially with the
+/// following flags:
+///
+/// > strace -fe 'status=!unfinished' -Ttttyyv -s 4096
 #[derive(Debug, Clone, Parser)]
 struct Args {
     #[command(subcommand)]
@@ -21,53 +27,71 @@ struct Args {
 
 #[derive(Debug, Clone, clap::Subcommand)]
 enum Command {
+    /// Convert strace output to a Perfetto file (`.pftrace`)
     #[command(name = "strace2perfetto")]
     StraceToPerfetto(StraceToPerfettoArgs),
 
+    /// Write strace output to an OpenTelemetry OTLP endpoint.
     #[command(name = "strace2otel")]
     StraceToOtel(StraceToOtelArgs),
 
+    /// Run a process via strace
+    ///
+    /// Sets defaults for appropriate parsing. Write output verbatim, or
+    /// parse and write to any source.
     Record(RecordArgs),
 }
 
 #[derive(Debug, Clone, Parser)]
 struct StraceToPerfettoArgs {
+    /// The strace file to parse (defaults to stdin)
     #[arg(default_value_t)]
     input: patharg::InputArg,
 
+    /// The Perfetto file to write
     #[arg(short, long)]
     output: patharg::OutputArg,
 
+    /// Write logs ("Android logs" in the Perfetto UI)
     #[arg(short, long)]
     logs: bool,
 }
 
 #[derive(Debug, Clone, Parser)]
 struct StraceToOtelArgs {
+    /// The strace file to parse (defaults to stdin)
     #[arg(default_value_t)]
     input: patharg::InputArg,
 
+    /// Write logs in addition to traces/spans
     #[arg(short, long)]
     logs: bool,
 
+    /// Send events as if they occurred starting now. Durations are preserved.
+    /// Can be useful if the OTel endpoint ignores old traces.
     #[arg(long)]
     relative_to_now: bool,
 }
 
 #[derive(Debug, Clone, Parser)]
 struct RecordArgs {
+    /// Record all syscalls (default: record file and process syscalls)
     #[arg(long)]
     full: bool,
 
+    /// Write output to OpenTelemetry OTLP endpoint
     #[arg(long)]
     otel: bool,
 
+    /// Write raw strace output to a file
     #[arg(short, long)]
     output_strace: Option<PathBuf>,
 
+    /// Write output to a Perfetto file (`.pftrace`)
     #[arg(long)]
     output_perfetto: Option<PathBuf>,
 
+    /// The command to run
     #[arg(last = true)]
     command: Vec<std::ffi::OsString>,
 }
