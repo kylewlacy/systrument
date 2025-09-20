@@ -4,12 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ariadne = { version = "0.5.1", features = ["auto-color"] }
 blame-on = { git = "https://github.com/kylewlacy/blame-on.git", features = ["miette"] }
 bstr = "1.12.0"
-chumsky = "1.0.0-alpha.8"
 clap = { version = "4.5.47", features = ["derive"] }
-clio = { version = "0.3.5", features = ["clap-parse"] }
 interprocess = "2.2.3"
 jiff = "0.2.15"
 libc = "0.2.175"
